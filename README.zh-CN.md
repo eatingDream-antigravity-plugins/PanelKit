@@ -6,7 +6,7 @@
 
 [主页](https://eatingdream.dev) · [English](README.md) | 简体中文 · [AI 指南](docs/ai-guide.md) · [`llms.txt`](llms.txt)
 
-[![CI](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml)
+[![CI](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-1A1916?logo=rust&logoColor=white)
 ![SEP-1865](https://img.shields.io/badge/MCP%20Apps-SEP--1865-D97757)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -15,7 +15,7 @@
 
 ## 它是什么
 
-**PanelKit**（`agy-mcp-kit`）是 [eatingDream Antigravity 插件套件](https://eatingdream.dev) —— [ContextRadar](https://github.com/eatingDream-antigravity-plugins/context-radar-mcp)（`context-radar-mcp`）、[ClamGuard](https://github.com/eatingDream-antigravity-plugins/mac-clamshell-mcp)（`mac-clamshell-mcp`）、[RemoteCast](https://github.com/eatingDream-antigravity-plugins/chrome-stream-mcp)（`chrome-stream-mcp`）、[ColabDeck](https://github.com/eatingDream-antigravity-plugins/colab-mcp)（`colab-mcp`）共享的单一事实来源（A+B 混合架构）：
+**PanelKit**（`agy-mcp-kit`）是 [eatingDream Antigravity 插件套件](https://eatingdream.dev) —— [ContextRadar](https://github.com/eatingDream-antigravity-plugins/ContextRadar)（`context-radar-mcp`）、[ClamGuard](https://github.com/eatingDream-antigravity-plugins/ClamGuard)（`mac-clamshell-mcp`）、[RemoteCast](https://github.com/eatingDream-antigravity-plugins/RemoteCast)（`chrome-stream-mcp`）、[ColabDeck](https://github.com/eatingDream-antigravity-plugins/ColabDeck)（`colab-mcp`）共享的单一事实来源（A+B 混合架构）：
 
 - **B — 单一事实源与完整测试**：维护零冗余的 Rust 核心模块（仅依赖 `serde`/`serde_json`）与 Editorial-Warm 面板基础件，由 `cargo test --locked` 和 `node --test` 独立守护。
 - **A — 零外部依赖独立同步**：通过 `scripts/sync-kit.sh` 与 SHA256 `kit-manifest.json`，将精简核心文件直接同步进各插件仓库并用 `--check` 校验零漂移，确保每个插件的离线 `cargo build --release --locked` 保持极速独立构建。
