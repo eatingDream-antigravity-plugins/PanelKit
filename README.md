@@ -1,10 +1,10 @@
 <div align="center">
 
-# agy-mcp-kit
+# PanelKit (agy-mcp-kit)
 
 **Canonical Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift vendor sync for Antigravity plugins.**
 
-English | [简体中文](README.zh-CN.md) · [AI Guide](docs/ai-guide.md) · [`llms.txt`](llms.txt)
+[Homepage](https://eatingdream.dev) · English | [简体中文](README.zh-CN.md) · [AI Guide](docs/ai-guide.md) · [`llms.txt`](llms.txt)
 
 [![CI](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-1A1916?logo=rust&logoColor=white)
@@ -15,7 +15,7 @@ English | [简体中文](README.zh-CN.md) · [AI Guide](docs/ai-guide.md) · [`l
 
 ## What It Is
 
-The single source of truth behind our Antigravity MCP plugin suite (`context-radar-mcp`, `mac-clamshell-mcp`, `chrome-stream-mcp`, `colab-mcp`). It combines:
+**PanelKit** (`agy-mcp-kit`) is the single source of truth behind the [eatingDream Antigravity Plugin Suite](https://eatingdream.dev) — [ContextRadar](https://github.com/eatingDream-antigravity-plugins/context-radar-mcp) (`context-radar-mcp`), [ClamGuard](https://github.com/eatingDream-antigravity-plugins/mac-clamshell-mcp) (`mac-clamshell-mcp`), [RemoteCast](https://github.com/eatingDream-antigravity-plugins/chrome-stream-mcp) (`chrome-stream-mcp`), and [ColabDeck](https://github.com/eatingDream-antigravity-plugins/colab-mcp) (`colab-mcp`). It combines:
 
 - **B — Canonical Library & Test Suite**: Battle-tested, zero-bloat Rust modules (`serde`/`serde_json` only) and Editorial-Warm panel primitives verified by `cargo test --locked` and `node --test`.
 - **A — Zero-External-Dep Standalone Sync**: `scripts/sync-kit.sh` + SHA256 `kit-manifest.json` vendor tiny canonical files directly into each plugin repo with `--check` drift verification—keeping every plugin's offline `cargo build --release --locked` fast and standalone.

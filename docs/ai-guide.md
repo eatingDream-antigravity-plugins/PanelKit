@@ -1,8 +1,8 @@
-# agy-mcp-kit — AI Agent Guide & API Reference
+# PanelKit (agy-mcp-kit) — AI Agent Guide & API Reference
 
-`agy-mcp-kit` follows the **A+B Hybrid** model:
+**PanelKit** (`agy-mcp-kit`, <https://eatingdream.dev>) follows the **A+B Hybrid** model:
 - **B (Canonical Source)**: All runtime primitives and panel standards live and are tested here (`cargo test --locked`, `node --test panel/test/kit.test.mjs`).
-- **A (Zero-External-Dep Standalone Sync)**: Downstream plugins (`context-radar-mcp`, `mac-clamshell-mcp`, `chrome-stream-mcp`, `colab-mcp`) vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA256 hashes in `.agy-kit-sync.json` and `kit-manifest.json`.
+- **A (Zero-External-Dep Standalone Sync)**: Downstream plugins — ContextRadar (`context-radar-mcp`), ClamGuard (`mac-clamshell-mcp`), RemoteCast (`chrome-stream-mcp`), and ColabDeck (`colab-mcp`) — vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA256 hashes in `.agy-kit-sync.json` and `kit-manifest.json`.
 
 ---
 
