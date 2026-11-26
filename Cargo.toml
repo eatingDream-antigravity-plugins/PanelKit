@@ -5,8 +5,8 @@ edition = "2021"
 rust-version = "1.75"
 description = "Canonical zero-bloat Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift sync tooling for Antigravity plugins"
 license = "MIT"
-repository = "https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit"
-homepage = "https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit"
+repository = "https://github.com/eatingDream-antigravity-plugins/PanelKit"
+homepage = "https://github.com/eatingDream-antigravity-plugins/PanelKit"
 keywords = ["mcp", "jsonrpc", "sep-1865", "swr", "antigravity"]
 categories = ["development-tools", "network-programming"]
 
