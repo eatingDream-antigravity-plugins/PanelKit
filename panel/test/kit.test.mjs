@@ -360,6 +360,128 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
     clearInterval(interval);
     app2.close();
   });
+
+  it("hardens color/alpha parsing, cancels retry sleep immediately on close(), locks ev.origin, deep-merges styles, and guards request()/callbacks", async () => {
+    // 1. Fail-closed color/alpha parsing (no bypasses on none/scientific/var/dots)
+    const props = new Map();
+    const fakeEl = { style: { setProperty: (k, v) => props.set(k, v) } };
+    for (const bad of [
+      "oklch(0.2 0 0 / none)",
+      "hsl(0 0% 0% / 5e-2)",
+      "color(srgb 0 0 0 / var(--zero))",
+      "rgb(. . .)",
+      "rgba(0, 0, 0, .)",
+      "hsl(0, 0%, 0%, none)",
+      "oklch(0.2 0 0 / 0.5",
+    ]) {
+      applyHostStyleVariables({ "--color-background-primary": bad }, fakeEl);
+      assert.equal(props.has("--color-background-primary"), false, `should reject ${bad}`);
+    }
+    assert.equal(parseColorLum("rgb(. . .)"), null);
+    assert.equal(parseColorLum("rgb(10, 20, 30)"), (0.2126 * 10 + 0.7152 * 20 + 0.0722 * 30) / 255);
+    applyHostStyleVariables({ "--color-background-primary": "oklch(0.2 0 0 / 0.95)" }, fakeEl);
+    assert.equal(props.get("--color-background-primary"), "oklch(0.2 0 0 / 0.95)");
+
+    // 2. close() during retryDelayMs sleep cancels timer immediately (< 50ms for 600ms delay)
+    const env = makeFakeEnv();
+    const parent = {
+      postMessage(msg, origin) {
+        env.sentToParent.push({ msg, origin });
+        if (msg.method === "ui/initialize") {
+          setImmediate(() =>
+            env.win.emit("message", {
+              source: parent,
+              origin: "https://host.example",
+              data: { jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2020-01-01" } },
+            })
+          );
+        }
+      },
+    };
+    env.win.parent = parent;
+    const app = App({ name: "retry-sleep", version: "0.2.1" }, {}, { window: env.win, document: env.doc });
+
+    // request() before connect() rejects immediately
+    await assert.rejects(() => app.request("tools/call", { name: "x" }), /not connected/);
+
+    const connP = app.connect({ retries: 2, retryDelayMs: 600, timeoutMs: Number.NaN });
+    await new Promise((r) => setTimeout(r, 15));
+    const t0 = Date.now();
+    app.close();
+    await assert.rejects(() => connP, /Closed/);
+    assert.ok(Date.now() - t0 < 150, "close() must cancel retry sleep timer immediately");
+
+    // 3. Post-init origin locking + deep-merged hostCtx.styles.{variables,css} + throwing callback isolation
+    const env2 = makeFakeEnv();
+    const parent2 = {
+      postMessage(msg, origin) {
+        env2.sentToParent.push({ msg, origin });
+        if (msg.method === "ui/initialize") {
+          setImmediate(() =>
+            env2.win.emit("message", {
+              source: parent2,
+              origin: "https://locked-host.example",
+              data: {
+                jsonrpc: "2.0",
+                id: msg.id,
+                result: {
+                  protocolVersion: LATEST_PROTOCOL_VERSION,
+                  hostCapabilities: { serverTools: {} },
+                  hostContext: {
+                    theme: "dark",
+                    styles: {
+                      variables: { "--color-background-primary": "#141311", "--keep-var": "1" },
+                      css: { fonts: "@font-face { font-family: A; }" },
+                    },
+                  },
+                },
+              },
+            })
+          );
+        }
+      },
+    };
+    env2.win.parent = parent2;
+    const app2 = App({ name: "origin-lock", version: "0.2.1" }, {}, { window: env2.win, document: env2.doc });
+    await app2.connect();
+
+    // Post-init notifications use locked origin instead of "*"
+    const initNotif = env2.sentToParent.find((m) => m.msg.method === "ui/notifications/initialized");
+    assert.equal(initNotif.origin, "https://locked-host.example");
+
+    // Spoofed origin after lock is ignored even with matching source
+    env2.win.emit("message", {
+      source: parent2,
+      origin: "https://evil.example",
+      data: {
+        jsonrpc: "2.0",
+        method: "ui/notifications/host-context-changed",
+        params: { theme: "light" },
+      },
+    });
+    assert.equal(app2.getHostContext().theme, "dark");
+
+    // Deep-merge preserves existing styles.variables and styles.css.fonts, and throwing callback does not reject
+    app2.onhostcontextchanged = () => {
+      throw new Error("boom in user callback");
+    };
+    env2.win.emit("message", {
+      source: parent2,
+      origin: "https://locked-host.example",
+      data: {
+        jsonrpc: "2.0",
+        method: "ui/notifications/host-context-changed",
+        params: { styles: { variables: { "--new-var": "2" }, css: { extra: "body{}" } } },
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    const merged = app2.getHostContext();
+    assert.equal(merged.styles.variables["--keep-var"], "1");
+    assert.equal(merged.styles.variables["--new-var"], "2");
+    assert.equal(merged.styles.css.fonts, "@font-face { font-family: A; }");
+    assert.equal(merged.styles.css.extra, "body{}");
+    app2.close();
+  });
 });
 
 describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
@@ -372,6 +494,21 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
     assert.equal(report.ok, true);
     assert.ok(report.bytes < DEFAULT_MAX_BYTES);
     assert.equal(FAMILY_TOKENS.length, 16);
+
+    // Valid CSP where a quoted directive precedes default-src 'none' MUST pass
+    const reorderedCsp = buildValidPanelHtml({
+      cspTag: `<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'; default-src 'none'; style-src 'unsafe-inline'">`,
+    });
+    assert.equal(checkPanelInvariants(reorderedCsp).ok, true);
+
+    // Multiple <style> blocks splitting dark/light tokens AND CSS comment containing '}' inside :root MUST pass
+    const splitStyles = buildValidPanelHtml({
+      css: "",
+    }).replace(
+      "<style></style>",
+      `<style>${TOKENS_CSS.slice(0, TOKENS_CSS.indexOf(":root[data-theme")).replace("--bg:", "/* } */\n  --bg:")}</style><style>${TOKENS_CSS.slice(TOKENS_CSS.indexOf(":root[data-theme"))}</style>`
+    );
+    assert.equal(checkPanelInvariants(splitStyles).ok, true);
   });
 
   it("rejects every single invariant violation cleanly", () => {
@@ -380,21 +517,34 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       ["multiple scripts", buildValidPanelHtml({ scriptBlock: "<script>1</script><script>2</script>" }), {}],
       ["missing CSP", buildValidPanelHtml({ cspTag: "" }), {}],
       ["CSP outside head", buildValidPanelHtml({ cspTag: "", bodyTag: '<body style="background:#141311"><!-- default-src \'none\' -->' }), {}],
+      ["commented-out CSP in head", buildValidPanelHtml({ cspTag: `<!-- <meta http-equiv="Content-Security-Policy" content="default-src 'none'"> -->` }), {}],
+      ["loose CSP default-src 'none' *", buildValidPanelHtml({ cspTag: `<meta http-equiv="Content-Security-Policy" content="default-src 'none' *">` }), {}],
       ["external URL", buildValidPanelHtml({ scriptBlock: '<script>const u="https://user:secret@cdn.example.com/a.js?token=TOPSECRET";</script>' }), {}],
+      ["wss external URL", buildValidPanelHtml({ scriptBlock: '<script>const ws="wss://evil.example.com/sock";</script>' }), {}],
       ["protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#141311"><img src="//cdn.example.com/x.png">' }), {}],
+      ["unquoted protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#141311"><img src=//cdn.example.com/x.png>' }), {}],
+      ["CSS url(//...)", buildValidPanelHtml({ css: `${TOKENS_CSS}\n.bg{background:url(//cdn.example.com/x.png)}` }), {}],
       ["missing dark html lock", buildValidPanelHtml({ htmlTag: "<html>" }), {}],
       ["missing dark meta lock", buildValidPanelHtml({ metaTag: '<meta name="color-scheme" content="dark light">' }), {}],
+      ["commented dark meta lock", buildValidPanelHtml({ metaTag: '<!-- <meta name="color-scheme" content="dark"> -->' }), {}],
       ["missing dark body lock", buildValidPanelHtml({ bodyTag: "<body>" }), {}],
       ["prefers-color-scheme", buildValidPanelHtml({ css: `${TOKENS_CSS}\n@media(prefers-color-scheme:light){body{color:#000}}` }), {}],
       ["opacity:0 keyframe", buildValidPanelHtml({ css: `${TOKENS_CSS}\n@keyframes fade{from{opacity:0}to{opacity:1}}` }), {}],
+      ["webkit opacity:0% !important keyframe", buildValidPanelHtml({ css: `${TOKENS_CSS}\n@-webkit-keyframes fade{0%{opacity:0% !important}100%{opacity:1}}` }), {}],
       ["innerHTML assignment", buildValidPanelHtml({ scriptBlock: "<script>el.innerHTML='x';</script>" }), {}],
+      ["innerHTML += assignment", buildValidPanelHtml({ scriptBlock: "<script>el.innerHTML+='x';</script>" }), {}],
+      ["bracket innerHTML assignment", buildValidPanelHtml({ scriptBlock: `<script>el["innerHTML"]='x';</script>` }), {}],
       ["outerHTML assignment", buildValidPanelHtml({ scriptBlock: "<script>el.outerHTML='x';</script>" }), {}],
       ["insertAdjacentHTML sink", buildValidPanelHtml({ scriptBlock: "<script>el.insertAdjacentHTML('beforeend','x');</script>" }), {}],
+      ["createContextualFragment sink", buildValidPanelHtml({ scriptBlock: "<script>r.createContextualFragment('<p>x</p>');</script>" }), {}],
+      ["parseFromString sink", buildValidPanelHtml({ scriptBlock: "<script>p.parseFromString('<p>x</p>','text/html');</script>" }), {}],
       ["top-level return syntax error", buildValidPanelHtml({ scriptBlock: "<script>return 1;</script>" }), {}],
       ["--buncss-* leakage", buildValidPanelHtml({ css: `${TOKENS_CSS}\n.x{--buncss-foo:1}` }), {}],
       ["wrong light --ok color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#2F7D53", "#3D8B60") }), {}],
       ["missing family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s0: #EAE5DC;", "") }), {}],
+      ["commented-out family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s0: #EAE5DC;", "/* --s0: #EAE5DC; */") }), {}],
       ["missing reduced motion", buildValidPanelHtml({ css: TOKENS_CSS.replace(/prefers-reduced-motion/g, "x-motion") }), {}],
+      ["commented-out reduced motion", buildValidPanelHtml({ css: TOKENS_CSS.replace(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*$/i, "/* @media (prefers-reduced-motion: reduce) {} */") }), {}],
     ];
 
     for (const [label, html, opts] of cases) {
@@ -406,6 +556,16 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       }
       assert.throws(() => assertPanelInvariants(html, opts), /Panel invariant gate failed/, label);
     }
+
+    // CLI unknown --* flags must fail closed with exit code 2
+    const guardPath = path.join(REPO_ROOT, "panel", "guard.mjs");
+    let exitCode = 0;
+    try {
+      execFileSync(process.execPath, [guardPath, "--unknown-flag", "dummy.html"], { stdio: "pipe" });
+    } catch (err) {
+      exitCode = err.status;
+    }
+    assert.equal(exitCode, 2, "guard.mjs CLI must exit 2 on unknown --* flags");
   });
 });
 
@@ -439,6 +599,37 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       );
       const syncMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8"));
       assert.ok(syncMeta.files["panel/kit/tokens.css"], "selective sync must keep previously tracked files");
+
+      // P2-1: Passing --map against an existing selective .agy-kit-sync.json must preserve subset (not expand to all 10 files)
+      execFileSync(
+        "bash",
+        [syncScript, "--map", "panel/guard.mjs=panel/custom-guard.mjs", tmpRepo],
+        { cwd: REPO_ROOT, stdio: "pipe" }
+      );
+      const mappedMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8"));
+      assert.equal(Object.keys(mappedMeta.files).length, 4, "--map must preserve selective subset count");
+      assert.ok(mappedMeta.files["panel/custom-guard.mjs"]);
+      assert.equal(mappedMeta.files["src/kit/mcp_protocol.rs"], undefined);
+
+      // P2-1: Reject case-colliding APFS destinations
+      assert.throws(
+        () =>
+          execFileSync(
+            "bash",
+            [
+              syncScript,
+              "--files",
+              "panel/tokens.css,panel/guard.mjs",
+              "--map",
+              "panel/tokens.css=panel/kit/item.txt",
+              "--map",
+              "panel/guard.mjs=panel/kit/ITEM.txt",
+              tmpRepo,
+            ],
+            { cwd: REPO_ROOT, stdio: "pipe" }
+          ),
+        /Command failed/
+      );
 
       // Zero-drift check passes
       execFileSync("bash", [syncScript, "--check", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" });
@@ -530,6 +721,22 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       assert.equal(failed, true, "check_sanitized.sh must catch staged-only secret");
       assert.ok(stderr.includes("leak.txt:1"), "must report file:line");
       assert.equal(stderr.includes(fakeSecret), false, "must NEVER echo secret content");
+
+      // P2-3: Catches expanded /Users/<user>/Code path AND handles filenames containing colons cleanly
+      execFileSync("git", ["rm", "-qf", "leak.txt"], { cwd: tmpRepo });
+      const fakeLocalPath = ["/", "Users", "/alice/", "Code", "/secret-project"].join("");
+      fs.writeFileSync(path.join(tmpRepo, "a:b.txt"), `root=${fakeLocalPath}\n`);
+      execFileSync("git", ["add", "a:b.txt"], { cwd: tmpRepo });
+      let colonErr = "";
+      let colonFailed = false;
+      try {
+        execFileSync("bash", ["scripts/check_sanitized.sh"], { cwd: tmpRepo, stdio: "pipe" });
+      } catch (err) {
+        colonFailed = true;
+        colonErr = String(err.stderr || "") + String(err.stdout || "");
+      }
+      assert.equal(colonFailed, true, "check_sanitized.sh must catch /Users/<user>/Code path");
+      assert.ok(colonErr.includes("a:b.txt:1"), "must report full filename with colon + line number");
 
       // Missing patterns file -> fails closed with exit code 2
       fs.rmSync(path.join(tmpRepo, ".github/sanitize-patterns.txt"));

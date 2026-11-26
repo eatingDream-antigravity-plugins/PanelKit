@@ -183,12 +183,40 @@ def validate_sync_file(sync_file: Path) -> None:
     if sync_file.is_symlink():
         fail(f"refusing symlinked sync metadata file: {sync_file}")
 
+def load_json_nofollow(p: Path) -> dict:
+    raw = read_text_nofollow(p)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"invalid JSON in '{p}': {exc}")
+    if not isinstance(data, dict):
+        fail(f"expected JSON object in '{p}'")
+    return data
+
 def read_kit_version() -> str:
-    cargo = (kit_root / "Cargo.toml").read_text(encoding="utf-8")
-    for line in cargo.splitlines():
-        s = line.strip()
-        if s.startswith("version") and "=" in s:
-            return s.split("=", 1)[1].strip().strip('"').strip("'")
+    cargo_path = kit_root / "Cargo.toml"
+    try:
+        import tomllib  # Python 3.11+
+        with cargo_path.open("rb") as f:
+            data = tomllib.load(f)
+        ver = data.get("package", {}).get("version")
+        if isinstance(ver, str) and ver.strip():
+            return ver.strip()
+    except ImportError:
+        in_package = False
+        for line in cargo_path.read_text(encoding="utf-8").splitlines():
+            s = line.split("#", 1)[0].strip()
+            if not s:
+                continue
+            if s.startswith("[") and s.endswith("]"):
+                in_package = s == "[package]"
+                continue
+            if in_package and "=" in s:
+                k, v = s.split("=", 1)
+                if k.strip() == "version":
+                    return v.strip().strip('"').strip("'")
+    except Exception as exc:
+        fail(f"failed to parse {cargo_path}: {exc}")
     return "0.0.0"
 
 def read_kit_commit() -> str:
@@ -230,7 +258,7 @@ if mode == "check-manifest":
     if not manifest_path.is_file():
         fail("kit-manifest.json is missing; run --update-manifest")
     expected = compute_manifest()
-    actual = json.loads(read_text_nofollow(manifest_path))
+    actual = load_json_nofollow(manifest_path)
     if actual != expected:
         fail("kit-manifest.json is out of date; run ./scripts/sync-kit.sh --update-manifest")
     print(f"sync-kit: kit-manifest.json verified clean ({len(expected['files'])} files)")
@@ -253,13 +281,19 @@ validate_sync_file(sync_file)
 if mode == "check":
     if not sync_file.exists():
         fail(f"missing {sync_file}; run sync-kit.sh <target-repo-dir> first")
-    sync_meta = json.loads(read_text_nofollow(sync_file))
+    sync_meta = load_json_nofollow(sync_file)
     synced_files = sync_meta.get("files", {})
     if not isinstance(synced_files, dict) or not synced_files:
         fail(f"no synced files recorded in {sync_file}")
     drifted = []
+    seen_lower: dict[str, str] = {}
     for dest_rel, info in sorted(synced_files.items()):
         dest_path = validate_dest_rel(target_dir, dest_rel)
+        dest_low = dest_rel.lower()
+        if dest_low in seen_lower:
+            drifted.append(f"  {dest_rel}: case-colliding destination with '{seen_lower[dest_low]}'")
+            continue
+        seen_lower[dest_low] = dest_rel
         if not isinstance(info, dict):
             drifted.append(f"  {dest_rel}: malformed metadata entry")
             continue
@@ -298,7 +332,7 @@ for item in map_lines:
 
 prev_files: dict[str, dict] = {}
 if sync_file.exists():
-    prev = json.loads(read_text_nofollow(sync_file))
+    prev = load_json_nofollow(sync_file)
     raw_prev = prev.get("files", {})
     if not isinstance(raw_prev, dict):
         fail(f"malformed files map in {sync_file}")
@@ -329,34 +363,56 @@ if files_csv:
     if "LICENSE" not in seen_srcs:
         lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
         selected.append(("LICENSE", lic_dest))
-elif prev_files and not custom_maps:
+elif prev_files:
     seen_srcs = set()
     for dest, info in sorted(prev_files.items()):
         src = info["source"]
-        if src in manifest["files"]:
+        if src in manifest["files"] and src not in seen_srcs:
+            selected.append((src, custom_maps.get(src, dest)))
+            seen_srcs.add(src)
+    for src, dest in custom_maps.items():
+        if src not in seen_srcs:
             selected.append((src, dest))
             seen_srcs.add(src)
     if "LICENSE" not in seen_srcs:
-        selected.append(("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
+        lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
+        selected.append(("LICENSE", lic_dest))
 else:
     for src, meta in manifest["files"].items():
         selected.append((src, custom_maps.get(src, prev_dest_by_src.get(src, meta["defaultDest"]))))
 
-# Pre-flight validation: reject duplicate destinations, unsafe paths, and unforced local modifications.
-dest_seen: dict[str, str] = {}
+# Pre-flight validation: reject duplicate/case-colliding destinations, unsafe paths, and unforced local modifications.
+selected_srcs = {src for src, _ in selected}
+dest_seen: dict[str, tuple[str, str]] = {}
+for old_dest, old_info in prev_files.items():
+    old_src = old_info.get("source")
+    if isinstance(old_src, str) and old_src not in selected_srcs:
+        old_low = old_dest.lower()
+        if old_low in dest_seen:
+            orig_dest, orig_src = dest_seen[old_low]
+            fail(f"case-colliding tracked destination '{old_dest}' (collides with '{orig_dest}' for '{orig_src}')")
+        dest_seen[old_low] = (old_dest, old_src)
+
 conflicts: list[str] = []
 validated_plan: list[tuple[str, str, Path, Path]] = []
 
 for src, dest in selected:
     dest_path = validate_dest_rel(target_dir, dest)
-    if dest in dest_seen:
-        fail(f"duplicate destination path '{dest}' for '{dest_seen[dest]}' and '{src}'")
-    dest_seen[dest] = src
+    dest_low = dest.lower()
+    if dest_low in dest_seen:
+        orig_dest, orig_src = dest_seen[dest_low]
+        fail(f"duplicate or case-colliding destination path '{dest}' (collides with '{orig_dest}' for '{orig_src}')")
+    dest_seen[dest_low] = (dest, src)
     src_path = kit_root / src
 
     if dest_path.exists():
         actual_sha = sha256_file_nofollow(dest_path)
         prev_sha = prev_files.get(dest, {}).get("sha256")
+        if prev_sha is None:
+            for old_dest, old_info in prev_files.items():
+                if old_info.get("source") == src and old_dest.lower() == dest_low:
+                    prev_sha = old_info.get("sha256")
+                    break
         canonical_sha = manifest["files"][src]["sha256"]
         if not force and actual_sha != canonical_sha and actual_sha != prev_sha:
             conflicts.append(
