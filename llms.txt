@@ -1,0 +1,23 @@
+# agy-mcp-kit
+
+> Canonical zero-bloat Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift sync tooling for Antigravity plugins.
+
+## Key Files
+- [README.md](README.md): Project overview and quick start
+- [docs/ai-guide.md](docs/ai-guide.md): Complete Rust API, Panel Bridge, QA Gate, and `sync-kit.sh` reference for Agents
+- [kit-manifest.json](kit-manifest.json): Canonical SHA256 manifest of all syncable kit files
+
+## Rust Modules (`serde` + `serde_json` only)
+- [src/mcp_protocol.rs](src/mcp_protocol.rs): MCP version negotiation, strict SEP-1865 `mimeTypes` check, shared `tools/list` + `tools/call` visibility gate, JSON-RPC 2.0 single & batch dispatch
+- [src/swr_cache.rs](src/swr_cache.rs): Generic single-flight background `SwrCache<T>` with `<1 ms` warm reads and `rev` / `is_unchanged` polling
+- [src/html_boot.rs](src/html_boot.rs): Split-point `HtmlLoader` with `(mtime, len)` cache and safe inline-script JSON escaping
+- [src/test_guard.rs](src/test_guard.rs): Compile-time `#[cfg(test)]` refusal helper (`ensure_not_in_test`, `guard_host_effect!`)
+
+## Panel Kit (Editorial-Warm / SEP-1865)
+- [panel/tokens.css](panel/tokens.css): 16 canonical two-letter tokens (dark `#141311`, light `#FAF8F4` + `--ok: #2F7D53`), reduced-motion
+- [panel/bridge.js](panel/bridge.js): Strict `ev.source === parent` PostMessage bridge (`2026-01-26`), `serverTools`, live theme sync, net RTT
+- [panel/guard.mjs](panel/guard.mjs): Shared Panel QA gate (`assertPanelInvariants`, CLI + ESM)
+
+## Sync & Hygiene Scripts
+- [scripts/sync-kit.sh](scripts/sync-kit.sh): Vendor canonical files into target repos (`--files`, `--map`, `--check`, `--update-manifest`, `--check-manifest`)
+- [scripts/check_sanitized.sh](scripts/check_sanitized.sh): Fail-closed, redacted sanitization guard

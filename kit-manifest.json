@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kit": "agy-mcp-kit",
+  "version": "0.1.0",
+  "files": {
+    "src/mcp_protocol.rs": {
+      "defaultDest": "src/kit/mcp_protocol.rs",
+      "sha256": "e050ebe04af57e7bf2b54fefadf2146b87e604b7049d6a5edc5cd90ddaf45791",
+      "bytes": 17609
+    },
+    "src/swr_cache.rs": {
+      "defaultDest": "src/kit/swr_cache.rs",
+      "sha256": "4bc99fa602059a2557a0642be5525f7eba2bdf93cbe775dbeb5fb09c0951b190",
+      "bytes": 18076
+    },
+    "src/html_boot.rs": {
+      "defaultDest": "src/kit/html_boot.rs",
+      "sha256": "94b4760ec83bf4e5b22035dd73f4938a08be2ec8d8cdd2e80893745c3776d9af",
+      "bytes": 11335
+    },
+    "src/test_guard.rs": {
+      "defaultDest": "src/kit/test_guard.rs",
+      "sha256": "d9b2e9e445825bb001fa986c65ba008ed207dfba7707d562d187cf5f1285f073",
+      "bytes": 2834
+    },
+    "panel/tokens.css": {
+      "defaultDest": "panel/kit/tokens.css",
+      "sha256": "2f43b5c63caaa5cac967074850dede182beb8962418a28f65f7b83dce4afb525",
+      "bytes": 1891
+    },
+    "panel/bridge.js": {
+      "defaultDest": "panel/kit/bridge.js",
+      "sha256": "d29bb953dfb1f6319a62fde492c8599cca17f0b01b00f30973144249a1d64450",
+      "bytes": 13942
+    },
+    "panel/guard.mjs": {
+      "defaultDest": "panel/kit/guard.mjs",
+      "sha256": "32931f97f7aad81bf06ce12fe1361e5d17319e2486ef9ebfb955b870d725f9b0",
+      "bytes": 7379
+    },
+    "scripts/check_sanitized.sh": {
+      "defaultDest": "scripts/check_sanitized.sh",
+      "sha256": "d64a6e3040898a459c6f5f0ac972e07bcf85f46bb6532398f8259d740c875af3",
+      "bytes": 1167
+    },
+    ".github/sanitize-patterns.txt": {
+      "defaultDest": ".github/sanitize-patterns.txt",
+      "sha256": "9c518acf17cdafd8691336dd97359721c3a6bd3cdc894fb63b0e024ab7b5506e",
+      "bytes": 2315
+    }
+  }
+}

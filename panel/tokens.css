@@ -1,0 +1,96 @@
+/* Canonical Editorial-Warm Instrument Tokens (Opus 5.5 Spec §0-§1)
+ * Dark-first default; light theme ONLY via :root[data-theme="light"].
+ * No OS media theme queries, no zero-opacity keyframes, reduced-motion respected.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #141311;
+  --s1: #1C1B18;
+  --s2: #25231F;
+  --s0: #0E0D0B;
+  --t1: #F4F1EA;
+  --t2: #A39E93;
+  --t3: #7B766C;
+  --ln: #FFF8EE14;
+  --l2: #FFF8EE0D;
+  --sh: inset 0 1px 0 #FFFFFF0A;
+  --ac: #D97757;
+  --ah: #E5896B;
+  --ok: #4E9F72;
+  --wn: #D4A14B;
+  --er: #D95F59;
+  --in: #6B94D6;
+  --tk: 14%;
+  --sf: ui-serif, "New York", Georgia, serif;
+  --sn: -apple-system, system-ui, "PingFang SC", sans-serif;
+  --mn: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #FAF8F4;
+  --s1: #FFFFFF;
+  --s2: #F1EDE6;
+  --s0: #EAE5DC;
+  --t1: #1A1916;
+  --t2: #6B665C;
+  --t3: #857F74;
+  --ln: #1C191517;
+  --l2: #1C19150F;
+  --sh: inset 0 1px 0 #FFFFFFBF;
+  --ac: #C96442;
+  --ah: #B4583A;
+  --ok: #2F7D53;
+  --wn: #A87620;
+  --er: #BD433D;
+  --in: #4771B8;
+  --tk: 16%;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--color-background-primary, var(--bg));
+  color: var(--color-text-primary, var(--t1));
+  font: 13px/1.45 var(--sn);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 2px;
+}
+
+.kl {
+  font-size: 11px;
+  color: var(--t3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+:lang(zh-CN) .kl {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
