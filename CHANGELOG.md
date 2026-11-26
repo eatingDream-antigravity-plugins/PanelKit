@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/compare/v0.2.0...v0.2.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* harden MCP protocol, SWR cold-wait fencing, bridge color parser, and panel guard ([#2](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/issues/2)) ([57a9d45](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/commit/57a9d45e3a5337f1592ca13f2b99df1304756f55))
+
 ## [0.2.0](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/compare/v0.1.0...v0.2.0) (2026-11-26)
 
 
