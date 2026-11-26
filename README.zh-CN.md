@@ -1,10 +1,10 @@
 <div align="center">
 
-# agy-mcp-kit
+# PanelKit (agy-mcp-kit)
 
 **面向 Antigravity 插件套件的标准 Rust MCP 运行时原语、SEP-1865 暖色编辑风面板套件与零漂移同步工具。**
 
-[English](README.md) | 简体中文 · [AI 指南](docs/ai-guide.md) · [`llms.txt`](llms.txt)
+[主页](https://eatingdream.dev) · [English](README.md) | 简体中文 · [AI 指南](docs/ai-guide.md) · [`llms.txt`](llms.txt)
 
 [![CI](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/actions/workflows/ci.yml)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-1A1916?logo=rust&logoColor=white)
@@ -15,7 +15,7 @@
 
 ## 它是什么
 
-`agy-mcp-kit` 是我们 4 个 Antigravity 插件（`context-radar-mcp`、`mac-clamshell-mcp`、`chrome-stream-mcp`、`colab-mcp`）共享的单一事实来源（A+B 混合架构）：
+**PanelKit**（`agy-mcp-kit`）是 [eatingDream Antigravity 插件套件](https://eatingdream.dev) —— [ContextRadar](https://github.com/eatingDream-antigravity-plugins/context-radar-mcp)（`context-radar-mcp`）、[ClamGuard](https://github.com/eatingDream-antigravity-plugins/mac-clamshell-mcp)（`mac-clamshell-mcp`）、[RemoteCast](https://github.com/eatingDream-antigravity-plugins/chrome-stream-mcp)（`chrome-stream-mcp`）、[ColabDeck](https://github.com/eatingDream-antigravity-plugins/colab-mcp)（`colab-mcp`）共享的单一事实来源（A+B 混合架构）：
 
 - **B — 单一事实源与完整测试**：维护零冗余的 Rust 核心模块（仅依赖 `serde`/`serde_json`）与 Editorial-Warm 面板基础件，由 `cargo test --locked` 和 `node --test` 独立守护。
 - **A — 零外部依赖独立同步**：通过 `scripts/sync-kit.sh` 与 SHA256 `kit-manifest.json`，将精简核心文件直接同步进各插件仓库并用 `--check` 校验零漂移，确保每个插件的离线 `cargo build --release --locked` 保持极速独立构建。

@@ -1,6 +1,6 @@
-# agy-mcp-kit
+# PanelKit (agy-mcp-kit)
 
-> Canonical zero-bloat Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift sync tooling for Antigravity plugins.
+> Canonical zero-bloat Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift sync tooling for the eatingDream Antigravity Plugin Suite (ContextRadar, ClamGuard, RemoteCast, ColabDeck). Homepage: https://eatingdream.dev
 
 ## Key Files
 - [README.md](README.md): Project overview and quick start
