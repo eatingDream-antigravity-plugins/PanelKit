@@ -14,10 +14,28 @@ const JSONRPC_VER = "2.0";
 const UI_NOTIF_PREFIX = "ui/notifications/";
 
 const rgbLuminance = (r, g, b) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+const STRICT_NUM_RE = /^(?:\d+\.?\d*|\.\d+)$/;
 
-function parseAlpha(val, pct) {
-  const a = pct === "%" ? Number(val) / 100 : Number(val);
-  return Number.isFinite(a) ? a : null;
+function parseAlpha(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const isPct = s.endsWith("%");
+  const numPart = isPct ? s.slice(0, -1) : s;
+  if (!STRICT_NUM_RE.test(numPart)) return null;
+  const a = isPct ? Number(numPart) / 100 : Number(numPart);
+  return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : null;
+}
+
+function parseRgbChannel(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const isPct = s.endsWith("%");
+  const numPart = isPct ? s.slice(0, -1) : s;
+  if (!STRICT_NUM_RE.test(numPart)) return null;
+  const n = Number(numPart);
+  if (!Number.isFinite(n)) return null;
+  const ch = isPct ? (n / 100) * 255 : n;
+  return Math.max(0, Math.min(255, ch));
 }
 
 function parseColorAlphaLum(raw) {
@@ -31,21 +49,44 @@ function parseColorAlphaLum(raw) {
     const short = h.length <= 4;
     const ch = (i) => parseInt(short ? h[i] + h[i] : h.slice(i * 2, i * 2 + 2), 16);
     const a = h.length === 4 || h.length === 8 ? ch(3) / 255 : 1;
-    return { a, lum: rgbLuminance(ch(0), ch(1), ch(2)) };
+    const lum = rgbLuminance(ch(0), ch(1), ch(2));
+    return Number.isFinite(a) && Number.isFinite(lum) ? { a, lum } : null;
   }
 
-  m = s.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]*)(%?))?\s*\)$/i);
+  m = s.match(/^rgba?\(\s*([^\s,/]+)[,\s]+([^\s,/]+)[,\s]+([^\s,/]+)(?:\s*([,/])\s*([^)]*))?\s*\)$/i);
   if (m) {
-    const a = m[4] !== undefined && m[4] !== "" ? parseAlpha(m[4], m[5]) : 1;
-    return a === null ? null : { a, lum: rgbLuminance(Number(m[1]), Number(m[2]), Number(m[3])) };
+    const r = parseRgbChannel(m[1]);
+    const g = parseRgbChannel(m[2]);
+    const b = parseRgbChannel(m[3]);
+    if (r === null || g === null || b === null) return null;
+    const a = m[4] !== undefined ? parseAlpha(m[5]) : 1;
+    const lum = rgbLuminance(r, g, b);
+    return a !== null && Number.isFinite(lum) ? { a, lum } : null;
   }
 
-  if (/^(hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(low)) {
-    m = low.match(/\/\s*([\d.]*)(%?)\s*\)$/) || low.match(/^hsla?\([^,]+,[^,]+,[^,]+,\s*([\d.]*)(%?)\s*\)$/);
-    if (m) {
-      const a = parseAlpha(m[1], m[2]);
+  m = low.match(/^(hsla?|hwb|lab|lch|oklab|oklch|color)\(([^()]*)\)$/);
+  if (m) {
+    const fn = m[1];
+    const body = m[2].trim();
+    if (!body) return null;
+    if (body.includes("/")) {
+      const parts = body.split("/");
+      if (parts.length !== 2) return null;
+      const a = parseAlpha(parts[1]);
       return a === null ? null : { a, lum: null };
     }
+    if ((fn === "hsl" || fn === "hsla") && body.includes(",")) {
+      const parts = body.split(",");
+      if (parts.length === 4) {
+        const a = parseAlpha(parts[3]);
+        return a === null ? null : { a, lum: null };
+      }
+      if (parts.length === 3) {
+        return { a: 1, lum: null };
+      }
+      return null;
+    }
+    if (/\bnone\b/i.test(body)) return null;
     return { a: 1, lum: null };
   }
 
@@ -62,7 +103,13 @@ function parseColorAlphaLum(raw) {
  */
 export function parseColorLum(raw) {
   const parsed = parseColorAlphaLum(raw);
-  return parsed && parsed.a >= 0.5 && parsed.lum !== null ? parsed.lum : null;
+  return parsed &&
+    Number.isFinite(parsed.a) &&
+    parsed.a >= 0.5 &&
+    parsed.lum !== null &&
+    Number.isFinite(parsed.lum)
+    ? parsed.lum
+    : null;
 }
 
 /**
@@ -153,10 +200,11 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   const perfNow = options.perfNow ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
   const caps = appCapabilities || {};
   const autoResize = options.autoResize === true;
-  const targetOrigin =
+  const configuredOrigin =
     typeof options.targetOrigin === "string" && options.targetOrigin.trim()
       ? options.targetOrigin.trim()
       : "*";
+  let activeOrigin = configuredOrigin;
   const target =
     options.target !== undefined
       ? options.target
@@ -172,6 +220,8 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   let initOk = false;
   let connEpoch = 0;
   let connPromise = null;
+  let retryTimer = null;
+  let retryCancel = null;
   let listening = false;
   let resizeObserver = null;
   let lastRttMs = null;
@@ -180,7 +230,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     if (!target || typeof target.postMessage !== "function") {
       throw new Error("MCP host parent window unavailable");
     }
-    target.postMessage(payload, targetOrigin);
+    target.postMessage(payload, activeOrigin);
   };
 
   const reply = (id, result, error) =>
@@ -200,10 +250,55 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     }
   };
 
+  const cancelRetrySleep = () => {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (retryCancel) {
+      const cancel = retryCancel;
+      retryCancel = null;
+      cancel();
+    }
+  };
+
+  const mergeHostContext = (prevCtx, delta) => {
+    const prev = prevCtx && typeof prevCtx === "object" ? prevCtx : {};
+    const patch = delta && typeof delta === "object" ? delta : {};
+    const hasStyles = prev.styles || patch.styles;
+    const mergedStyles = hasStyles
+      ? {
+          ...(prev.styles || {}),
+          ...(patch.styles || {}),
+          ...(prev.styles?.variables || patch.styles?.variables
+            ? {
+                variables: {
+                  ...(prev.styles?.variables || {}),
+                  ...(patch.styles?.variables || {}),
+                },
+              }
+            : {}),
+          ...(prev.styles?.css || patch.styles?.css
+            ? {
+                css: {
+                  ...(prev.styles?.css || {}),
+                  ...(patch.styles?.css || {}),
+                },
+              }
+            : {}),
+        }
+      : undefined;
+    return {
+      ...prev,
+      ...patch,
+      ...(mergedStyles !== undefined ? { styles: mergedStyles } : {}),
+    };
+  };
+
   async function onMessage(ev) {
-    // Strictly validate event source (and targetOrigin when configured) against the parent host window.
+    // Strictly validate event source (and activeOrigin when configured/locked) against the parent host window.
     if (!target || !ev || ev.source !== target) return;
-    if (targetOrigin !== "*" && ev.origin !== targetOrigin) return;
+    if (activeOrigin !== "*" && ev.origin !== activeOrigin) return;
     const msg = ev.data;
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== JSONRPC_VER) return;
 
@@ -216,6 +311,16 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       if (msg.error) {
         entry.reject(new Error(msg.error.message || "RPC error"));
       } else {
+        // Lock inbound/outbound origin to ev.origin after ui/initialize when targetOrigin === "*" and ev.origin !== "null".
+        if (
+          entry.isInit &&
+          activeOrigin === "*" &&
+          typeof ev.origin === "string" &&
+          ev.origin &&
+          ev.origin !== "null"
+        ) {
+          activeOrigin = ev.origin;
+        }
         entry.resolve(msg.result);
       }
       return;
@@ -230,7 +335,11 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
         }
         reply(msg.id, null, { code: -32601, message: "Method not found" });
       } catch (err) {
-        reply(msg.id, null, { code: -32603, message: String(err) });
+        try {
+          reply(msg.id, null, { code: -32603, message: String(err) });
+        } catch {
+          // Host window may be unavailable; avoid unhandledrejection in async onMessage.
+        }
       }
       return;
     }
@@ -240,16 +349,28 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       if (method.startsWith(UI_NOTIF_PREFIX)) {
         const key = method.slice(UI_NOTIF_PREFIX.length);
         if (key === "host-context-changed") {
-          hostCtx = { ...(hostCtx || {}), ...params };
-          applyHostContext(hostCtx, doc);
-          self.onhostcontextchanged?.(params, hostCtx);
+          try {
+            hostCtx = mergeHostContext(hostCtx, params);
+            applyHostContext(hostCtx, doc);
+            if (typeof self.onhostcontextchanged === "function") {
+              await self.onhostcontextchanged(params, hostCtx);
+            }
+          } catch {
+            // Isolate user callback errors to prevent unhandledrejection.
+          }
         } else {
           const handlerKey = {
             "tool-input": "ontoolinput",
             "tool-result": "ontoolresult",
             "tool-cancelled": "ontoolcancelled",
           }[key];
-          if (handlerKey) self[handlerKey]?.(params);
+          if (handlerKey && typeof self[handlerKey] === "function") {
+            try {
+              await self[handlerKey](params);
+            } catch {
+              // Isolate user callback errors to prevent unhandledrejection.
+            }
+          }
         }
       } else if (method === "notifications/progress") {
         // Scope timer renewal strictly to the matching progressToken (never reset unrelated requests).
@@ -265,7 +386,13 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     }
   }
 
-  function request(method, params, { timeoutMs = 75_000, maxTimeoutMs } = {}) {
+  function request(method, params, opts = {}) {
+    if (!initOk && method !== "ui/initialize") {
+      return Promise.reject(new Error("MCP bridge is not connected"));
+    }
+    const rawTimeout = opts?.timeoutMs ?? 75_000;
+    const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 75_000;
+    const maxTimeoutMs = opts?.maxTimeoutMs;
     const id = nextId++;
     const rawTok = params?._meta?.progressToken;
     const progressToken =
@@ -287,6 +414,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       const entry = {
         resolve,
         reject,
+        isInit: method === "ui/initialize",
         progressToken,
         timer: startTimer(),
         hardTimer: setTimeout(expire, hardCapMs),
@@ -326,6 +454,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     initOk = false;
     hostCaps = null;
     hostCtx = null;
+    activeOrigin = configuredOrigin;
     detachListener();
     resizeObserver?.disconnect();
     resizeObserver = null;
@@ -335,6 +464,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   function close() {
     connEpoch += 1;
     connPromise = null;
+    cancelRetrySleep();
     resetConnectionState("Closed");
   }
 
@@ -397,9 +527,12 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     if (connPromise) return connPromise;
 
     const myEpoch = connEpoch;
-    const maxRetries = Math.max(0, Number(connectOpts.retries ?? 0));
-    const retryDelayMs = Math.max(0, Number(connectOpts.retryDelayMs ?? 200));
-    const timeoutMs = Number(connectOpts.timeoutMs ?? 20_000);
+    const rawRetries = Number(connectOpts.retries ?? 0);
+    const maxRetries = Number.isFinite(rawRetries) && rawRetries > 0 ? Math.floor(rawRetries) : 0;
+    const rawDelay = Number(connectOpts.retryDelayMs ?? 200);
+    const retryDelayMs = Number.isFinite(rawDelay) && rawDelay >= 0 ? rawDelay : 200;
+    const rawTimeout = Number(connectOpts.timeoutMs ?? 20_000);
+    const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 20_000;
 
     const p = (async () => {
       let lastErr = null;
@@ -434,7 +567,14 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
           }
           resetConnectionState("Handshake retry");
           if (attempt < maxRetries) {
-            await new Promise((r) => setTimeout(r, retryDelayMs));
+            await new Promise((resolve, reject) => {
+              retryCancel = () => reject(new Error("Closed"));
+              retryTimer = setTimeout(() => {
+                retryTimer = null;
+                retryCancel = null;
+                resolve();
+              }, retryDelayMs);
+            });
             if (myEpoch !== connEpoch) {
               throw new Error("Closed");
             }

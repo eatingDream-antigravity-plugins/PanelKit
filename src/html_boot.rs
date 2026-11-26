@@ -6,9 +6,13 @@
 
 use serde_json::Value;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
+
+/// Maximum disk HTML template size accepted by [`HtmlLoader::load`] (4 MiB).
+const MAX_TEMPLATE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Pre-split HTML template ready for fast boot-script injection.
 #[derive(Debug, Clone)]
@@ -125,10 +129,62 @@ fn is_reserved_global_key(name: &str) -> bool {
     matches!(name, "__proto__" | "constructor" | "prototype")
 }
 
-/// Returns `true` when `name` is a plain ASCII JS identifier safe for `window.<name>` dot access
-/// and not a prototype-polluting key.
+fn is_js_reserved_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "interface"
+            | "let"
+            | "new"
+            | "null"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+/// Returns `true` when `name` is a plain ASCII JS identifier safe for standalone or
+/// `window.<name>` dot access (rejects prototype-polluting keys and ES reserved keywords).
 pub fn is_safe_js_identifier(name: &str) -> bool {
-    if name.is_empty() || is_reserved_global_key(name) {
+    if name.is_empty() || is_reserved_global_key(name) || is_js_reserved_keyword(name) {
         return false;
     }
     let mut chars = name.chars();
@@ -212,17 +268,26 @@ impl HtmlLoader {
     }
 
     /// Returns the compiled template, serving from the in-memory cache whenever `(path, mtime, len)`
-    /// matches, trying subsequent candidate paths if an earlier candidate is unreadable/empty, and
-    /// falling back to the embedded template if no readable override exists.
+    /// matches, trying subsequent candidate paths if an earlier candidate is unreadable/empty/oversized,
+    /// and falling back to the embedded template if no readable override exists.
+    ///
+    /// Opens each candidate file once and inspects `file.metadata()` on the open descriptor with
+    /// a `4 MiB` upper bound to avoid metadata/read path-swap TOCTOU races.
     pub fn load(&self) -> Arc<CompiledTemplate> {
         for path in &self.candidate_paths {
-            let Ok(meta) = fs::metadata(path) else {
+            let Ok(file) = fs::File::open(path) else {
+                continue;
+            };
+            let Ok(meta) = file.metadata() else {
                 continue;
             };
             if !meta.is_file() {
                 continue;
             }
             let size = meta.len();
+            if size == 0 || size > MAX_TEMPLATE_BYTES {
+                continue;
+            }
             let mtime_ns = meta
                 .modified()
                 .ok()
@@ -239,18 +304,25 @@ impl HtmlLoader {
                 }
             }
 
-            if let Ok(text) = fs::read_to_string(path) {
-                if !text.is_empty() {
-                    let template = Arc::new(CompiledTemplate::from_html(&text, &self.placeholder));
-                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                    *cache = Some(CachedHtml {
-                        path: path.clone(),
-                        mtime_ns,
-                        size,
-                        template: Arc::clone(&template),
-                    });
-                    return template;
-                }
+            let mut text = String::new();
+            let read_ok = file
+                .take(MAX_TEMPLATE_BYTES + 1)
+                .read_to_string(&mut text)
+                .is_ok();
+            if read_ok
+                && !text.is_empty()
+                && (text.len() as u64) <= MAX_TEMPLATE_BYTES
+                && (text.len() as u64) == size
+            {
+                let template = Arc::new(CompiledTemplate::from_html(&text, &self.placeholder));
+                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                *cache = Some(CachedHtml {
+                    path: path.clone(),
+                    mtime_ns,
+                    size,
+                    template: Arc::clone(&template),
+                });
+                return template;
             }
         }
         Arc::clone(&self.embedded)
@@ -411,5 +483,37 @@ mod tests {
         assert!(loader.load().render_with_boot("").contains("<p>second</p>"));
         let _ = fs::remove_file(&p1);
         let _ = fs::remove_file(&p2);
+
+        // Reserved ES keywords are rejected by is_safe_js_identifier and fall back to bracket notation
+        for kw in [
+            "return", "class", "function", "var", "const", "let", "await",
+        ] {
+            assert!(
+                !is_safe_js_identifier(kw),
+                "ES reserved keyword must not be accepted as identifier: {kw}"
+            );
+            let rendered = tpl
+                .try_render_with_global_json(kw, &json!({"ok": true}))
+                .unwrap();
+            assert!(rendered.contains(&format!("window[\"{kw}\"]=")));
+        }
+        assert!(is_safe_js_identifier("__APP_BOOT__"));
+
+        // Oversized (> 4 MiB) candidate falls back cleanly to embedded template
+        let big_path = std::env::temp_dir().join(format!(
+            "agy-kit-oversized-{}-{ts}.html",
+            std::process::id()
+        ));
+        fs::write(&big_path, vec![b'a'; (MAX_TEMPLATE_BYTES as usize) + 16]).unwrap();
+        let big_loader = HtmlLoader::new(
+            "<p>embedded-fallback</p>",
+            "/*__BOOT__*/",
+            vec![big_path.clone()],
+        );
+        assert_eq!(
+            big_loader.load().render_with_boot(""),
+            "<p>embedded-fallback</p>"
+        );
+        let _ = fs::remove_file(&big_path);
     }
 }

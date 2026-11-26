@@ -37,5 +37,5 @@
 (^|[^A-Za-z0-9_])cio[A-Za-z0-9]{30,}
 
 # Local home/secret directory paths (macOS, Linux, Windows)
-(/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z][A-Za-z0-9._-]*/)(secrets|\.ssh|\.config|\.aws|\.kube|\.gnupg|Desktop|Documents|Downloads|Library)
+(/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z][A-Za-z0-9._-]*/)(secrets|\.ssh|\.config|\.aws|\.kube|\.gnupg|Desktop|Documents|Downloads|Library|Code|Projects|Developer|\.gemini|\.claude|\.cursor)
 [A-Za-z]:\\Users\\[A-Za-z][A-Za-z0-9._-]*\\

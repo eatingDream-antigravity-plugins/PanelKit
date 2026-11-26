@@ -18,41 +18,50 @@ Only depends on `serde` and `serde_json`. Every module is self-contained so it c
   - `APP_MIME = "text/html;profile=mcp-app"`
   - Error codes: `PARSE_ERROR (-32700)`, `INVALID_REQUEST (-32600)`, `METHOD_NOT_FOUND (-32601)`, `INVALID_PARAMS (-32602)`, `INTERNAL_ERROR (-32603)`
 - **Session & Negotiation**:
-  - `McpSession::default()` + `session.negotiate(&init_params) -> (&'static str, bool)`
+  - `McpSession` (`Copy`, `Default`):
+    - `session.try_negotiate(&init_params) -> Result<(&'static str, bool), &'static str>` — strict MCP `initialize` validation (`protocolVersion`, `capabilities`, `clientInfo.name`); rejects duplicate `initialize` once `session.initialized == true`.
+    - `session.negotiate(&init_params) -> (&'static str, bool)` — permissive helper (preserves frozen negotiated state once `session.initialized == true`).
+    - `session.supports_jsonrpc_batch() -> bool` — returns `true` only on legacy `2025-03-26` / `2024-11-05` sessions.
   - `negotiate_protocol_version(Option<&str>) -> &'static str`
   - `client_supports_mcp_apps(&init_params) -> bool` — strict SEP-1865 check requiring `capabilities.extensions["io.modelcontextprotocol/ui"].mimeTypes` to be an array explicitly containing `"text/html;profile=mcp-app"`.
-  - `build_initialize_result(name, version, protocol_version, apps_capable, extra_capabilities) -> Value`
+  - `build_initialize_result(name, version, protocol_version, apps_capable, extra_capabilities) -> Value` — merges sibling `extensions` cleanly and strips `UI_EXTENSION` whenever `apps_capable == false`.
 - **Shared Tool Visibility (`tools/list` & `tools/call`)**:
-  - `ToolVisibility::{ModelAndApp, AppOnly}` + `ToolVisibility::from_tool_json(&tool)`
+  - `ToolCaller::{Model, App}`
+  - `ToolVisibility::{ModelAndApp, ModelOnly, AppOnly, Hidden}` + `ToolVisibility::from_tool_json(&tool)` — defaults to `ModelAndApp` only when `_meta.ui.visibility` is absent; fails closed to `Hidden` whenever `visibility` is present with a non-array or contains neither `"model"` nor `"app"`.
   - `filter_tools_for_session(tools: &[Value], apps_capable: bool) -> Vec<Value>`
   - `is_tool_allowed_in_catalog(tool_name: &str, tools: &[Value], apps_capable: bool) -> bool`
-- **JSON-RPC 2.0 Dispatch**:
-  - `dispatch_jsonrpc(msg: &Value, handler) -> Option<Value>` — supports single requests, notifications (returns `None`), and batch arrays `[...]` (empty `[]` returns `-32600`; notification-only batch returns `None`).
+  - `is_tool_callable_by_in_catalog(tool_name: &str, tools: &[Value], caller: ToolCaller, apps_capable: bool) -> bool`
+- **JSON-RPC 2.0 & MCP Dispatch**:
+  - `dispatch_mcp_jsonrpc(session: McpSession, msg: &Value, handler) -> Option<Value>` — takes `McpSession` by value (`Copy`, avoiding borrow conflicts when `handler` mutates `session`), enforces string/integer MCP IDs, rejects pre-initialization requests (except `initialize`/`ping`), rejects duplicate `initialize`, forbids batched `initialize`, and rejects JSON-RPC batches on MCP `>= 2025-06-18`.
+  - `dispatch_jsonrpc(msg: &Value, handler) -> Option<Value>` — generic JSON-RPC 2.0 dispatcher for single requests, notifications (returns `None`), and batch arrays `[...]` (empty `[]` returns `-32600`; notification-only batch returns `None`).
   - `dispatch_jsonrpc_str(raw: &str, handler) -> Option<Value>` — returns `-32700` on invalid JSON.
 
 ### `src/swr_cache.rs`
-- `SwrConfig { fresh_ttl, cold_wait_timeout, error_backoff, thread_name }`
+- `SwrConfig { fresh_ttl, cold_wait_timeout, error_backoff, max_stale_ttl, thread_name }`
 - `SwrSnapshot<T> { value: Arc<T>, rev: u64, stale: bool }`
 - `SwrCache::new(config, loader)`
   - `prewarm()` — spawns at most 1 background refresh thread without blocking.
-  - `get_or_trigger_refresh() -> Result<SwrSnapshot<T>, String>` — returns `<1 ms` on warm hits (triggering single-flight background refresh if stale) and coalesces concurrent cold callers with optional bounded `cold_wait_timeout`.
+  - `get_or_trigger_refresh() -> Result<SwrSnapshot<T>, String>` — returns `<1 ms` on warm hits (triggering single-flight background refresh if stale), enforces optional `max_stale_ttl` bounded staleness, coalesces concurrent cold callers with `checked_add`-safe `cold_wait_timeout`, and re-spawns a fresh generation refresh if `invalidate()` runs during a cold wait.
   - `force_refresh_async() -> bool` — triggers background refresh even while fresh.
-  - `invalidate()` — marks stale without dropping the cached value.
-  - `set_value(value: T) -> u64` — installs a fresh value immediately (e.g. after mutations) and increments `rev`.
+  - `invalidate()` — marks stale and bumps generation (fencing stale in-flight completions and panics) without dropping the cached value.
+  - `set_value(value: T) -> u64` — installs a fresh value immediately (e.g. after mutations), increments `rev`, fences older in-flight refreshes, and drops replaced values outside the mutex.
   - `current_rev() -> u64`, `is_unchanged(since_rev) -> bool`, `is_unchanged_and_revalidate(since_rev) -> bool` — enables 0-byte unchanged polling.
 
 ### `src/html_boot.rs`
 - `CompiledTemplate::from_html(html, placeholder)`
   - `render_with_boot(boot_script) -> String`
-  - `render_with_global_json(global_var, &data) -> String`
+  - `try_render_with_global_json(global_var, &data) -> Result<String, String>` — rejects empty or prototype-polluting keys (`__proto__`, `constructor`, `prototype`) and falls back to JSON-escaped `window["..."]` for non-identifier keys.
+  - `render_with_global_json(global_var, &data) -> String` — infallible wrapper falling back to `/* invalid boot global */` on rejected keys.
+- `is_safe_js_identifier(name: &str) -> bool` — validates plain ASCII JS identifiers while rejecting prototype-polluting keys and ES reserved keywords.
 - `HtmlLoader::new(embedded_html, placeholder, candidate_paths)` & `HtmlLoader::with_env_and_exe_fallback(...)`
   - `prewarm()`, `load() -> Arc<CompiledTemplate>`, `render_boot(global_var, &data) -> String`
-  - Caches disk overrides by `(path, mtime_ns, size)` with zero disk reads on warm hits.
+  - Opens each candidate `File` once (`file.metadata()` + `4 MiB` cap) and caches by `(path, mtime_ns, size)` with zero disk reads on warm hits.
 - `escape_json_for_inline_script(raw_json)` & `serialize_boot_json(&val)` — escapes `<`, `>`, `&`, `U+2028`, `U+2029` to neutralize `</script>` and `<!--`.
 
 ### `src/test_guard.rs`
 - `ensure_not_in_test(action: &str) -> Result<(), String>` — fails at compile time under `#[cfg(test)]` (when vendored in the target crate) and at runtime when `AGY_TEST_GUARD_DENY=1`.
 - `guard_host_effect!("action")` — macro expanding `#[cfg(test)]` at the caller's crate site when consumed as a library dependency.
+- **Integration test note (`tests/*.rs`)**: Cargo compiles library crates without `#[cfg(test)]` when building `tests/*.rs` integration tests, so set `AGY_TEST_GUARD_DENY=1` in integration tests (or use `guard_host_effect!`) to block compiled-lib host side effects.
 
 ---
 
@@ -68,16 +77,18 @@ Defines all 16 Editorial-Warm two-letter tokens (`--bg`, `--s1`, `--s2`, `--s0`,
 - `LATEST_PROTOCOL_VERSION = "2026-01-26"`
 - `App(appInfo, appCapabilities, options)`:
   - Strict PostMessage check: drops any event where `!target || ev.source !== target` (`target = window.parent` when `window.parent !== window`).
-  - `connect({ retries, retryDelayMs, timeoutMs })`: coalesced single-flight `ui/initialize` handshake validating exact `protocolVersion === "2026-01-26"`; retryable after failure or `close()`.
+  - `options.targetOrigin`: pins expected host origin (`"*"` by default; when `"*"`, automatically locks inbound/outbound origin to `ev.origin` after `ui/initialize` whenever `ev.origin !== "null"`).
+  - `connect({ retries, retryDelayMs, timeoutMs })`: coalesced single-flight `ui/initialize` handshake validating exact `protocolVersion === "2026-01-26"`; retryable after failure or `close()`, with immediate timer cancellation on `close()`.
+  - `request(method, params, { timeoutMs, maxTimeoutMs })`: rejects immediately before `connect()` or after `close()` (except `ui/initialize`), validates finite `timeoutMs`, and scopes `notifications/progress` timer resets to matching `progressToken`.
   - `hasServerTools()`: checks `hostCapabilities.serverTools`.
   - `callServerTool(params, opts)` & `callServerToolWithMetrics(params, opts)` -> `{ result, totalMs, serverMs, netRttMs }`, plus `getLastRttMs()` and `measureNetRttMs(totalMs, serverMs)`.
-  - `onhostcontextchanged(delta, merged)`: invoked after live theme/luminance application (`applyHostContext`, `applyHostStyleVariables` with `>= 0.9` alpha guard on `--color-background-primary`).
+  - `onhostcontextchanged(delta, merged)`: invoked after deep-merging `hostCtx.styles.{variables,css}` and applying live theme/luminance (`applyHostContext`, `applyHostStyleVariables` with strict fail-closed `>= 0.9` alpha guard on `--color-background-primary`).
   - `autoResize` defaults to `false` and only sends `ui/notifications/size-changed` when `autoResize: true` AND `hostContext.containerDimensions.maxHeight != null` (zero spam in side panes).
 
 ### `panel/guard.mjs`
 - ESM API: `assertPanelInvariants(html, { maxBytes = 43500, hardMaxBytes = 46080, warnBytes = 44000, bootPlaceholder = null, skipJsParse = false })` and `checkPanelInvariants(html, opts)`.
-- CLI: `node panel/guard.mjs <path/to/panel.html> [--max-bytes 43500]`.
-- Enforces: byte budget, single inline `<script>` (syntax-checked), `default-src 'none'`, 0 external URLs, dark-first `<html>`/`<meta>`/`<body>` locks, 0 `prefers-color-scheme`, 0 `opacity:0` keyframes, 0 `.innerHTML`/`.outerHTML`, 0 `--buncss-*`, all 16 tokens in both themes + light `--ok: #2F7D53`, and `prefers-reduced-motion: reduce`.
+- CLI: `node panel/guard.mjs <path/to/panel.html> [--max-bytes 43500]` (fails closed with exit code `2` on unknown `--*` flags).
+- Enforces: byte budget, single inline `<script>` (syntax-checked), HTML comment stripping before tag checks, strict directive-bounded `<head>` CSP `default-src 'none'`, 0 external URLs (`http(s)://`, `ws(s)://`, protocol-relative `//` in HTML/CSS/JS), dark-first `<html>`/`<meta>`/`<body>` locks, 0 `prefers-color-scheme`, 0 `opacity:0`/`0%`/`!important` in `@keyframes`/`@-webkit-keyframes`, 0 `innerHTML`/`outerHTML` (`=`/`+=`/bracket) or `insertAdjacentHTML`/`document.write`/`createContextualFragment`/`parseFromString`, 0 `--buncss-*`, all 16 tokens in both themes across concatenated comment-stripped `<style>` blocks + light `--ok: #2F7D53`, and `prefers-reduced-motion: reduce`.
 
 ---
 
@@ -111,3 +122,4 @@ Default destination map:
 - `panel/{tokens.css,bridge.js,guard.mjs}` -> `panel/kit/{tokens.css,bridge.js,guard.mjs}`
 - `scripts/check_sanitized.sh` -> `scripts/check_sanitized.sh`
 - `.github/sanitize-patterns.txt` -> `.github/sanitize-patterns.txt`
+- `LICENSE` -> `THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE`
