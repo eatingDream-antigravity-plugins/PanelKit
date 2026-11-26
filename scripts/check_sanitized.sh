@@ -15,8 +15,9 @@ if [ ! -f "$patterns" ]; then
 fi
 
 pat_tmp=$(mktemp)
+match_tmp=$(mktemp)
 err_tmp=$(mktemp)
-trap 'rm -f "$pat_tmp" "$err_tmp"' EXIT
+trap 'rm -f "$pat_tmp" "$match_tmp" "$err_tmp"' EXIT
 
 if ! grep -vE '^[[:space:]]*(#|$)' "$patterns" > "$pat_tmp" || [ ! -s "$pat_tmp" ]; then
   echo "sanitization guard: $patterns contains no active patterns" >&2
@@ -26,16 +27,19 @@ fi
 run_scan() {
   local label="$1"
   shift
-  local matches=""
   local rc=0
+  : > "$match_tmp"
   set +e
-  matches=$(git grep "$@" -nEI -f "$pat_tmp" -- . ":(exclude)$patterns" ":(exclude)scripts/check_sanitized.sh" 2>"$err_tmp")
+  git grep "$@" -z -nEI -f "$pat_tmp" -- . >"$match_tmp" 2>"$err_tmp"
   rc=$?
   set -e
 
   if [ "$rc" -eq 0 ]; then
     echo "sanitization guard: forbidden pattern found in ${label} (line contents redacted):" >&2
-    printf '%s\n' "$matches" | awk -F: '{print "  " $1 ":" $2}' >&2
+    while IFS= read -r -d '' file && IFS= read -r -d '' line; do
+      IFS= read -r _rest || true
+      printf '  %s:%s\n' "$file" "$line" >&2
+    done < "$match_tmp"
     exit 1
   elif [ "$rc" -ne 1 ]; then
     echo "sanitization guard: git grep (${label}) failed with exit code $rc:" >&2

@@ -17,9 +17,12 @@ export const FAMILY_TOKENS = Object.freeze([
   "--ac", "--ah", "--ok", "--wn", "--er", "--in",
 ]);
 
-function extractCssBlock(css, selectorRegex) {
-  const m = css.match(selectorRegex);
-  return m ? m[1] : null;
+function extractAllCssBlocks(css, selectorRegex) {
+  const blocks = [];
+  for (const m of css.matchAll(selectorRegex)) {
+    if (m[1]) blocks.push(m[1]);
+  }
+  return blocks.length > 0 ? blocks.join("\n") : null;
 }
 
 function redactUrlForLog(rawUrl) {
@@ -60,73 +63,109 @@ export function checkPanelInvariants(html, options = {}) {
     warnings.push(`panel size warning: ${bytes} B > ${warnBytes} B`);
   }
 
+  // Strip HTML comments before structural tag scanning so commented-out <meta>/<style>/<script> cannot spoof checks.
+  const htmlNoComments = html.replace(/<!--[\s\S]*?-->/g, "");
+
   // CSP must be declared inside <head> via <meta http-equiv="Content-Security-Policy" ...>
-  const headMatch = html.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i);
+  const headMatch = htmlNoComments.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i);
   const headHtml = headMatch ? headMatch[1] : "";
-  const cspMetaTags = headHtml.match(/<meta\b[^>]*http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi) || [];
-  const hasValidCsp = cspMetaTags.some((tag) =>
-    /content\s*=\s*["'][^"']*default-src\s+'none'[^"']*["']/i.test(tag)
-  );
+  const cspMetaTags =
+    headHtml.match(/<meta\b[^>]*http-equiv\s*=\s*(?:["']content-security-policy["']|content-security-policy(?=[\s/>]))[^>]*>/gi) ||
+    [];
+  const hasValidCsp = cspMetaTags.some((tag) => {
+    const cm = tag.match(/\bcontent\s*=\s*(["'])([\s\S]*?)\1/i);
+    if (!cm) return false;
+    return /(?:^|;)\s*default-src\s+'none'\s*(?:;|$)/i.test(cm[2]);
+  });
   if (!hasValidCsp) {
     errors.push("missing <head> CSP meta directive: default-src 'none'");
   }
 
   // Zero external URLs (allow standard XML SVG namespace only; redact query/userinfo in errors)
   const strippedSvgNs = html.replace(/http:\/\/www\.w3\.org\/2000\/svg/gi, "");
-  const extUrl = strippedSvgNs.match(/https?:\/\/[^"'\s<>)]+/i);
+  const extUrl = strippedSvgNs.match(/(?:https?|wss?):\/\/[^"'\s<>)]+/i);
   if (extUrl) {
     errors.push(`forbidden external URL detected: ${redactUrlForLog(extUrl[0])}`);
   }
-  const protoRelAttr = strippedSvgNs.match(/\b(?:src|href|action)\s*=\s*["'](\/\/[^"'\s<>]+)["']/i);
+  const protoRelAttr = strippedSvgNs.match(
+    /\b(?:src|href|action|poster|data)\s*=\s*(?:["'](\/\/[^"'\s<>]+)["']|(\/\/[^\s"'<>`]+))/i
+  );
   if (protoRelAttr) {
-    errors.push(`forbidden protocol-relative URL detected: ${redactUrlForLog(protoRelAttr[1])}`);
+    errors.push(`forbidden protocol-relative URL detected: ${redactUrlForLog(protoRelAttr[1] || protoRelAttr[2])}`);
+  }
+  const protoRelCssUrl = strippedSvgNs.match(/\burl\(\s*["']?(\/\/[^"'\s)]+)/i);
+  if (protoRelCssUrl) {
+    errors.push(`forbidden protocol-relative CSS url() detected: ${redactUrlForLog(protoRelCssUrl[1])}`);
+  }
+  const protoRelImport = strippedSvgNs.match(/@import\s+["'](\/\/[^"'\s]+)["']/i);
+  if (protoRelImport) {
+    errors.push(`forbidden protocol-relative @import detected: ${redactUrlForLog(protoRelImport[1])}`);
+  }
+  const protoRelQuotedHost = strippedSvgNs.match(
+    /["'](\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/[^"'\s<>]*)?)["']/i
+  );
+  if (protoRelQuotedHost) {
+    errors.push(`forbidden protocol-relative URL string detected: ${redactUrlForLog(protoRelQuotedHost[1])}`);
   }
 
   // Dark-first Frame-0 locks
-  const htmlTag = html.match(/<html\b[^>]*>/i)?.[0] || "";
+  const htmlTag = htmlNoComments.match(/<html\b[^>]*>/i)?.[0] || "";
   if (
-    !/style=["'][^"']*background\s*:\s*#141311/i.test(htmlTag) ||
-    !/style=["'][^"']*color-scheme\s*:\s*dark/i.test(htmlTag)
+    !/style=(["'])[\s\S]*?background\s*:\s*#141311[\s\S]*?\1/i.test(htmlTag) ||
+    !/style=(["'])[\s\S]*?color-scheme\s*:\s*dark[\s\S]*?\1/i.test(htmlTag)
   ) {
     errors.push('missing dark-first inline lock on <html> (background:#141311;color-scheme:dark)');
   }
-  if (!/<meta\b[^>]*name=["']color-scheme["'][^>]*content=["']dark["'][^>]*>/i.test(html) &&
-      !/<meta\b[^>]*content=["']dark["'][^>]*name=["']color-scheme["'][^>]*>/i.test(html)) {
+  if (
+    !/<meta\b[^>]*name=["']color-scheme["'][^>]*content=["']dark["'][^>]*>/i.test(htmlNoComments) &&
+    !/<meta\b[^>]*content=["']dark["'][^>]*name=["']color-scheme["'][^>]*>/i.test(htmlNoComments)
+  ) {
     errors.push('missing dark-only <meta name="color-scheme" content="dark">');
   }
-  const bodyTag = html.match(/<body\b[^>]*>/i)?.[0] || "";
-  if (!/style=["'][^"']*background\s*:\s*#141311/i.test(bodyTag)) {
+  const bodyTag = htmlNoComments.match(/<body\b[^>]*>/i)?.[0] || "";
+  if (!/style=(["'])[\s\S]*?background\s*:\s*#141311[\s\S]*?\1/i.test(bodyTag)) {
     errors.push('missing dark-first inline lock on <body> (background:#141311)');
   }
 
   // Zero prefers-color-scheme
-  if (/prefers-color-scheme/i.test(html)) {
+  if (/prefers-color-scheme/i.test(htmlNoComments)) {
     errors.push("forbidden prefers-color-scheme query found");
   }
 
-  // Zero opacity:0 inside @keyframes
-  const keyframes = html.match(/@keyframes\s+[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/gi) || [];
+  // Extract all <style> blocks and strip CSS comments once for keyframes & token checks
+  const styleBlocks = [...htmlNoComments.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]);
+  const combinedCss = styleBlocks.join("\n").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // Zero opacity:0 / 0% / 0 !important inside @keyframes / @-webkit-keyframes
+  const keyframes =
+    combinedCss.match(/@(?:-webkit-)?keyframes\s+[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/gi) || [];
   for (const kf of keyframes) {
-    if (/opacity\s*:\s*0(?:\.0+)?(?:\s*[;}]|$)/i.test(kf) || /opacity\s*:\s*\.0+(?:\s*[;}]|$)/i.test(kf)) {
+    if (/opacity\s*:\s*(?:0(?:\.0+)?|\.0+)%?(?:\s*!important)?(?:\s*[;}]|$)/i.test(kf)) {
       errors.push(`forbidden opacity:0 in @keyframes: ${kf.slice(0, 80)}`);
     }
   }
 
-  // Zero innerHTML / outerHTML / insertAdjacentHTML / document.write DOM sinks
-  if (/\.(?:innerHTML|outerHTML)\s*=/i.test(html)) {
+  // Zero innerHTML / outerHTML (= or +=, dot or bracket) / insertAdjacentHTML / document.write / createContextualFragment / parseFromString DOM sinks
+  if (/(?:\.(?:innerHTML|outerHTML)|\[\s*["'`](?:innerHTML|outerHTML)["'`]\s*\])\s*\+?=/i.test(html)) {
     errors.push("forbidden innerHTML/outerHTML assignment detected");
   }
-  if (/\.(?:insertAdjacentHTML|write|writeln)\s*\(/i.test(html)) {
-    errors.push("forbidden HTML string injection sink detected (insertAdjacentHTML/document.write)");
+  if (
+    /(?:\.(?:insertAdjacentHTML|write|writeln|createContextualFragment|parseFromString)|\[\s*["'`](?:insertAdjacentHTML|write|writeln|createContextualFragment|parseFromString)["'`]\s*\])\s*\(/i.test(
+      html
+    )
+  ) {
+    errors.push(
+      "forbidden HTML string injection sink detected (insertAdjacentHTML/document.write/createContextualFragment/parseFromString)"
+    );
   }
 
   // Zero --buncss-* declarations
-  if (/--buncss-/i.test(html)) {
+  if (/--buncss-/i.test(htmlNoComments)) {
     errors.push("forbidden --buncss-* declaration detected");
   }
 
   // Exactly one inline <script>
-  const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+  const scripts = htmlNoComments.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
   if (scripts.length !== 1) {
     errors.push(`expected exactly 1 inline <script> tag, found ${scripts.length}`);
   } else {
@@ -149,13 +188,14 @@ export function checkPanelInvariants(html, options = {}) {
   }
 
   // All 16 family tokens in BOTH dark (:root) and light (:root[data-theme="light"]) + light --ok: #2F7D53
-  const styleMatch = html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/i);
-  if (!styleMatch) {
+  if (styleBlocks.length === 0) {
     errors.push("missing inline <style> block");
   } else {
-    const css = styleMatch[1];
-    const darkBlock = extractCssBlock(css, /:root\s*\{([^}]+)\}/i);
-    const lightBlock = extractCssBlock(css, /:root\s*\[\s*data-theme\s*=\s*["']?light["']?\s*\]\s*\{([^}]+)\}/i);
+    const darkBlock = extractAllCssBlocks(combinedCss, /:root\s*\{([^}]+)\}/gi);
+    const lightBlock = extractAllCssBlocks(
+      combinedCss,
+      /:root\s*\[\s*data-theme\s*=\s*["']?light["']?\s*\]\s*\{([^}]+)\}/gi
+    );
 
     if (!darkBlock) {
       errors.push("missing dark :root token block");
@@ -173,7 +213,7 @@ export function checkPanelInvariants(html, options = {}) {
         errors.push("light theme --ok must be #2F7D53");
       }
     }
-    if (!/prefers-reduced-motion\s*:\s*reduce/i.test(css)) {
+    if (!/prefers-reduced-motion\s*:\s*reduce/i.test(combinedCss)) {
       errors.push("missing @media (prefers-reduced-motion: reduce) rule");
     }
   }
@@ -215,7 +255,14 @@ if (isMain) {
       }
       maxBytes = parsed;
       i += 1;
-    } else if (!args[i].startsWith("--")) {
+    } else if (args[i].startsWith("-")) {
+      console.error(`Error: unknown option: ${args[i]}`);
+      process.exit(2);
+    } else {
+      if (filePath !== null) {
+        console.error(`Error: unexpected extra argument: ${args[i]}`);
+        process.exit(2);
+      }
       filePath = args[i];
     }
   }

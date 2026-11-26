@@ -23,6 +23,10 @@ pub struct SwrConfig {
     pub cold_wait_timeout: Duration,
     /// Minimum cooldown after a failed background refresh before retrying automatically.
     pub error_backoff: Duration,
+    /// Optional hard upper bound on staleness. When set and a cached entry's age exceeds
+    /// `max_stale_ttl`, reads will not serve the expired value immediately and instead fall
+    /// through to the bounded wait path for a fresh refresh.
+    pub max_stale_ttl: Option<Duration>,
     /// Name assigned to spawned background refresh threads.
     pub thread_name: String,
 }
@@ -33,6 +37,7 @@ impl Default for SwrConfig {
             fresh_ttl: Duration::from_secs(2),
             cold_wait_timeout: Duration::from_millis(500),
             error_backoff: Duration::ZERO,
+            max_stale_ttl: None,
             thread_name: "agy-swr-refresh".to_string(),
         }
     }
@@ -63,6 +68,7 @@ struct SwrState<T> {
     updated_at: Option<Instant>,
     forced_stale: bool,
     in_flight: bool,
+    in_flight_gen: Option<u64>,
     last_error: Option<String>,
     last_error_at: Option<Instant>,
 }
@@ -75,8 +81,11 @@ struct SwrInner<T> {
 }
 
 /// Ensures `in_flight` is cleared and waiting threads are woken even if the loader panics.
+/// Fences panic error writes against `refresh_gen` so a stale panicking loader never clobbers
+/// newer state installed by `set_value` or `invalidate`.
 struct InFlightGuard<T> {
     inner: Arc<SwrInner<T>>,
+    refresh_gen: u64,
     completed: bool,
 }
 
@@ -84,9 +93,12 @@ impl<T> Drop for InFlightGuard<T> {
     fn drop(&mut self) {
         if !self.completed {
             let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.generation == self.refresh_gen {
+                st.last_error = Some("background refresh panicked".to_string());
+                st.last_error_at = Some(Instant::now());
+            }
             st.in_flight = false;
-            st.last_error = Some("background refresh panicked".to_string());
-            st.last_error_at = Some(Instant::now());
+            st.in_flight_gen = None;
             self.inner.cvar.notify_all();
         }
     }
@@ -122,6 +134,7 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                     updated_at: None,
                     forced_stale: false,
                     in_flight: false,
+                    in_flight_gen: None,
                     last_error: None,
                     last_error_at: None,
                 }),
@@ -185,7 +198,8 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
         st.rev
     }
 
-    /// Returns `true` when `since_rev > 0` and the cached revision has not changed.
+    /// Returns `true` when `since_rev > 0` and the cached revision has not changed
+    /// (and the cached entry has not exceeded `max_stale_ttl`).
     ///
     /// Useful for 0-byte unchanged polling responses (`{ "unchanged": true, "rev": rev }`).
     pub fn is_unchanged(&self, since_rev: u64) -> bool {
@@ -193,14 +207,14 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
             return false;
         }
         let st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.rev == since_rev && st.value.is_some()
+        st.rev == since_rev && self.has_servable_value_locked(&st)
     }
 
     /// Checks whether `since_rev` still matches the cached revision AND kicks off a
     /// non-blocking background refresh if the entry is stale.
     pub fn is_unchanged_and_revalidate(&self, since_rev: u64) -> bool {
         let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-        let unchanged = since_rev > 0 && st.rev == since_rev && st.value.is_some();
+        let unchanged = since_rev > 0 && st.rev == since_rev && self.has_servable_value_locked(&st);
         if self.is_stale_locked(&st) && !self.in_error_backoff_locked(&st) {
             let _ = self.spawn_refresh_locked(&mut st);
         }
@@ -220,25 +234,28 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
     }
 
     /// Returns the cached snapshot immediately on warm hits (triggering at most one background
-    /// refresh if stale), or performs a bounded single-flight wait on cold boot.
+    /// refresh if stale), or performs a bounded single-flight wait on cold boot or when a
+    /// cached entry exceeds `max_stale_ttl`.
     pub fn get_or_trigger_refresh(&self) -> Result<SwrSnapshot<T>, String> {
         let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Warm path: NEVER block on I/O.
-        if let Some(ref val) = st.value {
-            let stale = self.is_stale_locked(&st);
-            let snap = SwrSnapshot {
-                value: Arc::clone(val),
-                rev: st.rev,
-                stale,
-            };
-            if stale && !self.in_error_backoff_locked(&st) {
-                let _ = self.spawn_refresh_locked(&mut st);
+        // Warm path: NEVER block on I/O (unless the entry has exceeded `max_stale_ttl`).
+        if self.has_servable_value_locked(&st) {
+            if let Some(ref val) = st.value {
+                let stale = self.is_stale_locked(&st);
+                let snap = SwrSnapshot {
+                    value: Arc::clone(val),
+                    rev: st.rev,
+                    stale,
+                };
+                if stale && !self.in_error_backoff_locked(&st) {
+                    let _ = self.spawn_refresh_locked(&mut st);
+                }
+                return Ok(snap);
             }
-            return Ok(snap);
         }
 
-        // Cold path: respect error_backoff before spawning a new loader thread.
+        // Cold / expired path: respect error_backoff before spawning a new loader thread.
         if !st.in_flight && self.in_error_backoff_locked(&st) {
             return Err(st
                 .last_error
@@ -246,8 +263,11 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                 .unwrap_or_else(|| "cache refresh in error backoff".to_string()));
         }
 
-        // Cold path: start (or coalesce onto) the single in-flight refresh.
+        let start_rev = st.rev;
+
+        // Cold / expired path: start (or coalesce onto) the single in-flight refresh.
         let _ = self.spawn_refresh_locked(&mut st);
+        let mut active_gen = st.in_flight_gen;
 
         let timeout = self.inner.config.cold_wait_timeout;
         if timeout.is_zero() {
@@ -257,36 +277,73 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                 .unwrap_or_else(|| "cache warming in background".to_string()));
         }
 
-        let deadline = Instant::now() + timeout;
-        while st.value.is_none() && st.in_flight {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            if remaining.is_zero() {
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            if self.has_servable_value_locked(&st) || (st.rev != start_rev && st.value.is_some()) {
                 break;
             }
-            let (guard, wait_res) = self
-                .inner
-                .cvar
-                .wait_timeout(st, remaining)
-                .unwrap_or_else(|e| e.into_inner());
-            st = guard;
-            if wait_res.timed_out() {
-                break;
+            if !st.in_flight {
+                // If an older in-flight refresh was fenced out by `invalidate()`, re-spawn a
+                // fresh generation refresh instead of returning a spurious timeout error.
+                if active_gen != Some(st.generation) && !self.in_error_backoff_locked(&st) {
+                    if self.spawn_refresh_locked(&mut st) {
+                        active_gen = st.in_flight_gen;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if let Some(dl) = deadline {
+                let Some(remaining) = dl.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                if remaining.is_zero() {
+                    break;
+                }
+                let (guard, wait_res) = self
+                    .inner
+                    .cvar
+                    .wait_timeout(st, remaining)
+                    .unwrap_or_else(|e| e.into_inner());
+                st = guard;
+                if wait_res.timed_out() {
+                    break;
+                }
+            } else {
+                st = self.inner.cvar.wait(st).unwrap_or_else(|e| e.into_inner());
             }
         }
 
         if let Some(ref val) = st.value {
-            Ok(SwrSnapshot {
-                value: Arc::clone(val),
-                rev: st.rev,
-                stale: self.is_stale_locked(&st),
-            })
-        } else if let Some(ref err) = st.last_error {
+            if self.has_servable_value_locked(&st) || st.rev != start_rev {
+                return Ok(SwrSnapshot {
+                    value: Arc::clone(val),
+                    rev: st.rev,
+                    stale: self.is_stale_locked(&st),
+                });
+            }
+        }
+        if let Some(ref err) = st.last_error {
             Err(err.clone())
         } else {
             Err("cache cold wait timed out while refresh in flight".to_string())
         }
+    }
+
+    fn is_expired_locked(&self, st: &SwrState<T>) -> bool {
+        let Some(max_stale) = self.inner.config.max_stale_ttl else {
+            return false;
+        };
+        match st.updated_at {
+            Some(at) => at.elapsed() >= max_stale,
+            None => true,
+        }
+    }
+
+    fn has_servable_value_locked(&self, st: &SwrState<T>) -> bool {
+        st.value.is_some() && !self.is_expired_locked(st)
     }
 
     fn is_stale_locked(&self, st: &SwrState<T>) -> bool {
@@ -315,12 +372,14 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
         }
         st.in_flight = true;
         let refresh_gen = st.generation;
+        st.in_flight_gen = Some(refresh_gen);
 
         let inner = Arc::clone(&self.inner);
         let thread_name = inner.config.thread_name.clone();
         let spawn_res = thread::Builder::new().name(thread_name).spawn(move || {
             let mut guard = InFlightGuard {
                 inner: Arc::clone(&inner),
+                refresh_gen,
                 completed: false,
             };
             let res = (inner.loader)();
@@ -344,6 +403,7 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                     }
                 }
                 st.in_flight = false;
+                st.in_flight_gen = None;
                 guard.completed = true;
                 inner.cvar.notify_all();
                 replaced
@@ -354,6 +414,7 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
 
         if let Err(err) = spawn_res {
             st.in_flight = false;
+            st.in_flight_gen = None;
             st.last_error = Some(format!("failed to spawn refresh thread: {err}"));
             st.last_error_at = Some(Instant::now());
             self.inner.cvar.notify_all();
@@ -380,6 +441,7 @@ mod tests {
                 cold_wait_timeout: Duration::from_secs(2),
                 error_backoff: Duration::ZERO,
                 thread_name: "test-swr-cold".into(),
+                ..SwrConfig::default()
             },
             Arc::new(move || {
                 calls_clone.fetch_add(1, Ordering::SeqCst);
@@ -424,6 +486,7 @@ mod tests {
                 cold_wait_timeout: Duration::from_millis(200),
                 error_backoff: Duration::ZERO,
                 thread_name: "test-swr-warm".into(),
+                ..SwrConfig::default()
             },
             Arc::new(move || {
                 let n = calls_clone.fetch_add(1, Ordering::SeqCst) + 1;
@@ -492,6 +555,7 @@ mod tests {
                 cold_wait_timeout: Duration::from_millis(200),
                 error_backoff: Duration::ZERO,
                 thread_name: "test-swr-err".into(),
+                ..SwrConfig::default()
             },
             Arc::new(move || {
                 if fail_flag.load(Ordering::SeqCst) {
@@ -532,6 +596,7 @@ mod tests {
                 cold_wait_timeout: Duration::ZERO,
                 error_backoff: Duration::ZERO,
                 thread_name: "test-swr-nonblock".into(),
+                ..SwrConfig::default()
             },
             Arc::new(|| {
                 thread::sleep(Duration::from_millis(120));
@@ -563,6 +628,7 @@ mod tests {
                 cold_wait_timeout: Duration::ZERO,
                 error_backoff: Duration::ZERO,
                 thread_name: "test-swr-gen".into(),
+                ..SwrConfig::default()
             },
             Arc::new(move || {
                 s_clone.wait();
@@ -603,6 +669,7 @@ mod tests {
                 cold_wait_timeout: Duration::from_secs(1),
                 error_backoff: Duration::from_secs(60),
                 thread_name: "test-swr-backoff".into(),
+                ..SwrConfig::default()
             },
             Arc::new(move || {
                 calls_clone.fetch_add(1, Ordering::SeqCst);
@@ -648,5 +715,115 @@ mod tests {
             on_drop: Box::new(|| {}),
         });
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cold_wait_respawns_after_invalidate_fences_panics_handles_duration_max_and_max_stale_ttl() {
+        // 1. Invalidate during cold refresh re-spawns a fresh generation instead of timing out
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let s_clone = Arc::clone(&started);
+        let r_clone = Arc::clone(&release);
+        let c_clone = Arc::clone(&calls);
+
+        let cache = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_secs(10),
+                cold_wait_timeout: Duration::from_secs(2),
+                error_backoff: Duration::ZERO,
+                max_stale_ttl: None,
+                thread_name: "test-swr-cold-inv".into(),
+            },
+            Arc::new(move || {
+                let n = c_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    s_clone.wait();
+                    r_clone.wait();
+                    Ok("stale-gen-0".to_string())
+                } else {
+                    Ok("fresh-gen-1".to_string())
+                }
+            }),
+        );
+
+        let c_waiter = cache.clone();
+        let handle = thread::spawn(move || c_waiter.get_or_trigger_refresh());
+        started.wait();
+        cache.invalidate();
+        release.wait();
+
+        let snap = handle
+            .join()
+            .unwrap()
+            .expect("cold wait must re-spawn and succeed");
+        assert_eq!(*snap.value, "fresh-gen-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // 2. Stale panicking loader does NOT clobber newer set_value / last_error
+        let p_started = Arc::new(Barrier::new(2));
+        let p_release = Arc::new(Barrier::new(2));
+        let ps = Arc::clone(&p_started);
+        let pr = Arc::clone(&p_release);
+        let panic_cache = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_secs(30),
+                cold_wait_timeout: Duration::ZERO,
+                error_backoff: Duration::from_secs(60),
+                max_stale_ttl: None,
+                thread_name: "test-swr-panic-fence".into(),
+            },
+            Arc::new(move || -> Result<String, String> {
+                ps.wait();
+                pr.wait();
+                panic!("simulated stale loader panic");
+            }),
+        );
+        assert!(panic_cache.force_refresh_async());
+        p_started.wait();
+        panic_cache.set_value("clean-state".to_string());
+        p_release.wait();
+        let wait_start = Instant::now();
+        while panic_cache.in_flight() && wait_start.elapsed() < Duration::from_secs(1) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(panic_cache.last_error(), None);
+        assert_eq!(
+            *panic_cache.get_or_trigger_refresh().unwrap().value,
+            "clean-state"
+        );
+
+        // 3. Duration::MAX cold_wait_timeout never panics on Instant overflow
+        let max_cache = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_secs(5),
+                cold_wait_timeout: Duration::MAX,
+                error_backoff: Duration::ZERO,
+                max_stale_ttl: None,
+                thread_name: "test-swr-dur-max".into(),
+            },
+            Arc::new(|| Ok(99usize)),
+        );
+        assert_eq!(*max_cache.get_or_trigger_refresh().unwrap().value, 99);
+
+        // 4. max_stale_ttl forces bounded revalidation when exceeded
+        let seq = Arc::new(AtomicUsize::new(0));
+        let seq_clone = Arc::clone(&seq);
+        let bounded = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_millis(20),
+                cold_wait_timeout: Duration::from_secs(2),
+                error_backoff: Duration::ZERO,
+                max_stale_ttl: Some(Duration::from_millis(60)),
+                thread_name: "test-swr-max-stale".into(),
+            },
+            Arc::new(move || Ok(seq_clone.fetch_add(1, Ordering::SeqCst) + 1)),
+        );
+        assert_eq!(*bounded.get_or_trigger_refresh().unwrap().value, 1);
+        thread::sleep(Duration::from_millis(80));
+        assert!(!bounded.is_unchanged(1));
+        let refreshed = bounded.get_or_trigger_refresh().unwrap();
+        assert_eq!(*refreshed.value, 2);
+        assert_eq!(refreshed.rev, 2);
     }
 }

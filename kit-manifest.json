@@ -5,18 +5,18 @@
   "files": {
     "src/mcp_protocol.rs": {
       "defaultDest": "src/kit/mcp_protocol.rs",
-      "sha256": "ecfe9540958f5b19b330546d8d164e459ee753abe81c8d0d4c35f255ca53296e",
-      "bytes": 30572
+      "sha256": "0298761bf7ce70bac76232664c31396004153dfac33f2c685389c85682065eaf",
+      "bytes": 38821
     },
     "src/swr_cache.rs": {
       "defaultDest": "src/kit/swr_cache.rs",
-      "sha256": "4d6c16ed5212d4de50ccb989be2034ce011f3af687ccabb1d05158223d7fdbf4",
-      "bytes": 23123
+      "sha256": "2aa52da4b0e1cfcdf0385c867e9407ce20c68570961f399f0a95bee075d488e9",
+      "bytes": 30442
     },
     "src/html_boot.rs": {
       "defaultDest": "src/kit/html_boot.rs",
-      "sha256": "dbd32dd0b067f0c99f7c16f3048e4d9f83499577d767dedc026f98ebefed516a",
-      "bytes": 15456
+      "sha256": "bdff5f1b4c4fae9fe72250a6ea2074bcd1767b591feb1980dd8dfc219201e9b4",
+      "bytes": 18662
     },
     "src/test_guard.rs": {
       "defaultDest": "src/kit/test_guard.rs",
@@ -30,23 +30,23 @@
     },
     "panel/bridge.js": {
       "defaultDest": "panel/kit/bridge.js",
-      "sha256": "9965faed78697036a4cbac3de6b0194db8766c7adf7fb67d8abee2421acf74c5",
-      "bytes": 16233
+      "sha256": "96908d427a2fe01cb401bbd2795b4c3b485e91e87f3eaf8f9e6ef12fe196552c",
+      "bytes": 20788
     },
     "panel/guard.mjs": {
       "defaultDest": "panel/kit/guard.mjs",
-      "sha256": "8b17ab471557148f387f1b408eda16344b699c94e5bf817c5b33d1f1d99ce674",
-      "bytes": 8925
+      "sha256": "766b586b6f14cacfe45e187101f0a2df3c70d83f9a49cc73a4f5e458bbde2562",
+      "bytes": 11097
     },
     "scripts/check_sanitized.sh": {
       "defaultDest": "scripts/check_sanitized.sh",
-      "sha256": "7aa545f0d123c02f4469ef86a5d8b8611e36372f9c9ce31df770e2062970ecc9",
-      "bytes": 1571
+      "sha256": "f954f55a621169458f4bd669823a609da773c9e0e35ffbc15056b87f7066c076",
+      "bytes": 1648
     },
     ".github/sanitize-patterns.txt": {
       "defaultDest": ".github/sanitize-patterns.txt",
-      "sha256": "bc59ab3845bb89d946ee23b45a50b9a2cd5a6087f928bc290ee17c66245dee66",
-      "bytes": 2419
+      "sha256": "7ebc8b724bbb86cc0fbf8805df89deef2aa2c9ec4f5aa25f2c3b4d5e315f85ce",
+      "bytes": 2470
     },
     "LICENSE": {
       "defaultDest": "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE",
