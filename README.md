@@ -81,9 +81,9 @@ All Rust type signatures, JS bridge options, Panel QA gate flags, and selective 
 ## Safety & Privacy
 
 - **Zero runtime network calls**: Both the Rust crate and JS panel kit make zero outbound network requests.
-- **Strict PostMessage origin/source check**: `panel/bridge.js` drops every message where `ev.source !== window.parent`.
-- **Fail-closed sanitization**: `scripts/check_sanitized.sh` redacts matched line contents (`file:line` only) and never masks `git grep` exit errors.
-- **Zero-side-effect tests**: `test_guard.rs` blocks live OS, display, browser, or billed cloud side effects at compile time during `cargo test`.
+- **Strict PostMessage origin/source check**: `panel/bridge.js` drops every message where `ev.source !== window.parent` and supports strict `targetOrigin` pinning when the host origin is known (falling back to `"*"` only in opaque-origin sandboxes).
+- **Fail-closed sanitization**: `scripts/check_sanitized.sh` scans both tracked working-tree files and the staged index, redacts matched line contents (`file:line` only), and never masks `git grep` exit errors.
+- **Zero-side-effect tests**: `test_guard.rs` blocks live OS, display, browser, or billed cloud side effects at compile time during unit tests (`#[cfg(test)]` via vendored `ensure_not_in_test` or `guard_host_effect!` in downstream crates); pre-built binaries and subprocess integration tests must set `AGY_TEST_GUARD_DENY=1`.
 
 ## Documentation
 

@@ -1,7 +1,8 @@
 //! Split-point HTML template loader with `(mtime, len)` caching and safe inline-script escaping.
 //!
 //! Pre-locates the boot-script injection slot once when a template is loaded so warm
-//! `resources/read` calls perform zero disk reads and a single pre-sized allocation (`<0.3 ms`).
+//! `resources/read` calls perform a single metadata stat (no template file re-read)
+//! and a single pre-sized allocation (`<0.3 ms`).
 
 use serde_json::Value;
 use std::fs;
@@ -54,30 +55,88 @@ impl CompiledTemplate {
         out
     }
 
-    /// Safely serializes `data` as an inline `window.<global_var>=<json>;` statement
-    /// and injects it at the split point.
+    /// Safely serializes `data` as an inline `window.<global_var>=<json>;` (or bracket-escaped
+    /// `window["..."]=<json>;`) statement and injects it at the split point.
+    ///
+    /// Rejects empty names or prototype-polluting keys (`__proto__`, `constructor`, `prototype`)
+    /// by returning an error via [`Self::try_render_with_global_json`]; this infallible wrapper
+    /// falls back to a harmless `/* invalid boot global */` comment if given a reserved key.
     pub fn render_with_global_json(&self, global_var: &str, data: &Value) -> String {
+        match self.try_render_with_global_json(global_var, data) {
+            Ok(html) => html,
+            Err(_) => self.render_with_boot("/* invalid boot global */"),
+        }
+    }
+
+    /// Fallible variant of [`Self::render_with_global_json`] that rejects empty or
+    /// prototype-polluting global property names and safely escapes non-identifier keys.
+    pub fn try_render_with_global_json(
+        &self,
+        global_var: &str,
+        data: &Value,
+    ) -> Result<String, String> {
+        if global_var.is_empty() || is_reserved_global_key(global_var) {
+            return Err(format!("unsafe boot global name: {global_var:?}"));
+        }
         if !self.has_placeholder {
-            return self.prefix.clone();
+            return Ok(self.prefix.clone());
         }
         let escaped = serialize_boot_json(data);
-        let mut out = String::with_capacity(
-            self.prefix.len()
-                + "window.".len()
-                + global_var.len()
-                + 2
-                + escaped.len()
-                + self.suffix.len(),
-        );
-        out.push_str(&self.prefix);
-        out.push_str("window.");
-        out.push_str(global_var);
-        out.push('=');
-        out.push_str(&escaped);
-        out.push(';');
-        out.push_str(&self.suffix);
-        out
+        if is_safe_js_identifier(global_var) {
+            let mut out = String::with_capacity(
+                self.prefix.len()
+                    + "window.".len()
+                    + global_var.len()
+                    + 2
+                    + escaped.len()
+                    + self.suffix.len(),
+            );
+            out.push_str(&self.prefix);
+            out.push_str("window.");
+            out.push_str(global_var);
+            out.push('=');
+            out.push_str(&escaped);
+            out.push(';');
+            out.push_str(&self.suffix);
+            Ok(out)
+        } else {
+            let key_json = serialize_boot_json(&Value::String(global_var.to_string()));
+            let mut out = String::with_capacity(
+                self.prefix.len()
+                    + "window[".len()
+                    + key_json.len()
+                    + 3
+                    + escaped.len()
+                    + self.suffix.len(),
+            );
+            out.push_str(&self.prefix);
+            out.push_str("window[");
+            out.push_str(&key_json);
+            out.push_str("]=");
+            out.push_str(&escaped);
+            out.push(';');
+            out.push_str(&self.suffix);
+            Ok(out)
+        }
     }
+}
+
+fn is_reserved_global_key(name: &str) -> bool {
+    matches!(name, "__proto__" | "constructor" | "prototype")
+}
+
+/// Returns `true` when `name` is a plain ASCII JS identifier safe for `window.<name>` dot access
+/// and not a prototype-polluting key.
+pub fn is_safe_js_identifier(name: &str) -> bool {
+    if name.is_empty() || is_reserved_global_key(name) {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 struct CachedHtml {
@@ -153,48 +212,48 @@ impl HtmlLoader {
     }
 
     /// Returns the compiled template, serving from the in-memory cache whenever `(path, mtime, len)`
-    /// matches and falling back to the embedded template if no readable override exists.
+    /// matches, trying subsequent candidate paths if an earlier candidate is unreadable/empty, and
+    /// falling back to the embedded template if no readable override exists.
     pub fn load(&self) -> Arc<CompiledTemplate> {
-        let mut found: Option<(&PathBuf, u128, u64)> = None;
-        for p in &self.candidate_paths {
-            if let Ok(meta) = fs::metadata(p) {
-                if meta.is_file() {
-                    let size = meta.len();
-                    let mtime_ns = meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0);
-                    found = Some((p, mtime_ns, size));
-                    break;
+        for path in &self.candidate_paths {
+            let Ok(meta) = fs::metadata(path) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let size = meta.len();
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+
+            {
+                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(ref c) = *cache {
+                    if c.path == *path && c.mtime_ns == mtime_ns && c.size == size {
+                        return Arc::clone(&c.template);
+                    }
+                }
+            }
+
+            if let Ok(text) = fs::read_to_string(path) {
+                if !text.is_empty() {
+                    let template = Arc::new(CompiledTemplate::from_html(&text, &self.placeholder));
+                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                    *cache = Some(CachedHtml {
+                        path: path.clone(),
+                        mtime_ns,
+                        size,
+                        template: Arc::clone(&template),
+                    });
+                    return template;
                 }
             }
         }
-
-        let Some((path, mtime_ns, size)) = found else {
-            return Arc::clone(&self.embedded);
-        };
-
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(ref c) = *cache {
-            if c.path == *path && c.mtime_ns == mtime_ns && c.size == size {
-                return Arc::clone(&c.template);
-            }
-        }
-        match fs::read_to_string(path) {
-            Ok(text) if !text.is_empty() => {
-                let template = Arc::new(CompiledTemplate::from_html(&text, &self.placeholder));
-                *cache = Some(CachedHtml {
-                    path: path.clone(),
-                    mtime_ns,
-                    size,
-                    template: Arc::clone(&template),
-                });
-                template
-            }
-            _ => Arc::clone(&self.embedded),
-        }
+        Arc::clone(&self.embedded)
     }
 
     /// Convenience helper: loads the template and injects `window.<global_var>=<escaped_json>;`.
@@ -314,5 +373,43 @@ mod tests {
             tpl.render_with_boot("ignored"),
             "<html><body>plain</body></html>"
         );
+    }
+
+    #[test]
+    fn guards_global_var_against_script_injection_and_falls_back_across_empty_candidate() {
+        let tpl = CompiledTemplate::from_html("<script>/*__BOOT__*/</script>", "/*__BOOT__*/");
+        assert!(tpl
+            .try_render_with_global_json("__proto__", &json!({"a": 1}))
+            .is_err());
+        assert!(tpl
+            .try_render_with_global_json("", &json!({"a": 1}))
+            .is_err());
+
+        let injected = tpl
+            .try_render_with_global_json("x=1;alert(1)</script>//", &json!({"ok": true}))
+            .unwrap();
+        assert!(!injected.contains("window.x=1"));
+        assert!(!injected.contains("</script>//"));
+        assert!(injected.contains("window[\"x=1;alert(1)\\u003c/script\\u003e//\"]="));
+
+        // First candidate empty -> falls through to second candidate before embedded
+        let ts = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p1 =
+            std::env::temp_dir().join(format!("agy-kit-empty-{}-{ts}.html", std::process::id()));
+        let p2 =
+            std::env::temp_dir().join(format!("agy-kit-valid-{}-{ts}.html", std::process::id()));
+        fs::write(&p1, "").unwrap();
+        fs::write(&p2, "<p>second</p><script>/*__BOOT__*/</script>").unwrap();
+        let loader = HtmlLoader::new(
+            "<p>embedded</p>",
+            "/*__BOOT__*/",
+            vec![p1.clone(), p2.clone()],
+        );
+        assert!(loader.load().render_with_boot("").contains("<p>second</p>"));
+        let _ = fs::remove_file(&p1);
+        let _ = fs::remove_file(&p2);
     }
 }

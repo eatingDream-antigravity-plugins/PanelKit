@@ -46,9 +46,14 @@ function parseColorAlphaLum(raw) {
       const a = parseAlpha(m[1], m[2]);
       return a === null ? null : { a, lum: null };
     }
+    return { a: 1, lum: null };
   }
 
-  return { a: 1, lum: null };
+  if (low === "black") return { a: 1, lum: 0 };
+  if (low === "white") return { a: 1, lum: 1 };
+
+  // Fail closed on unrecognized color values so unparseable/transparent aliases cannot bypass alpha >= 0.9.
+  return null;
 }
 
 /**
@@ -148,6 +153,10 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   const perfNow = options.perfNow ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
   const caps = appCapabilities || {};
   const autoResize = options.autoResize === true;
+  const targetOrigin =
+    typeof options.targetOrigin === "string" && options.targetOrigin.trim()
+      ? options.targetOrigin.trim()
+      : "*";
   const target =
     options.target !== undefined
       ? options.target
@@ -161,6 +170,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   let hostCtx = null;
   let nextId = 1;
   let initOk = false;
+  let connEpoch = 0;
   let connPromise = null;
   let listening = false;
   let resizeObserver = null;
@@ -170,7 +180,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     if (!target || typeof target.postMessage !== "function") {
       throw new Error("MCP host parent window unavailable");
     }
-    target.postMessage(payload, "*");
+    target.postMessage(payload, targetOrigin);
   };
 
   const reply = (id, result, error) =>
@@ -191,8 +201,9 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
   };
 
   async function onMessage(ev) {
-    // Strictly validate event source against the embedded parent host window.
+    // Strictly validate event source (and targetOrigin when configured) against the parent host window.
     if (!target || !ev || ev.source !== target) return;
+    if (targetOrigin !== "*" && ev.origin !== targetOrigin) return;
     const msg = ev.data;
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== JSONRPC_VER) return;
 
@@ -201,7 +212,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       const entry = pending.get(msg.id);
       if (!entry) return;
       pending.delete(msg.id);
-      clearTimeout(entry.timer);
+      entry.clearTimers();
       if (msg.error) {
         entry.reject(new Error(msg.error.message || "RPC error"));
       } else {
@@ -241,23 +252,48 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
           if (handlerKey) self[handlerKey]?.(params);
         }
       } else if (method === "notifications/progress") {
-        for (const entry of pending.values()) entry.reset();
+        // Scope timer renewal strictly to the matching progressToken (never reset unrelated requests).
+        const tok = params.progressToken;
+        if (tok !== undefined && tok !== null) {
+          for (const entry of pending.values()) {
+            if (entry.progressToken !== null && entry.progressToken === tok) {
+              entry.reset();
+            }
+          }
+        }
       }
     }
   }
 
-  function request(method, params, { timeoutMs = 75_000 } = {}) {
+  function request(method, params, { timeoutMs = 75_000, maxTimeoutMs } = {}) {
     const id = nextId++;
+    const rawTok = params?._meta?.progressToken;
+    const progressToken =
+      typeof rawTok === "string" || (typeof rawTok === "number" && Number.isFinite(rawTok))
+        ? rawTok
+        : null;
+    const hardCapMs =
+      Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+        ? Math.max(timeoutMs, maxTimeoutMs)
+        : Math.max(timeoutMs, timeoutMs * 4);
+
     return new Promise((resolve, reject) => {
-      const startTimer = () =>
-        setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`Timeout: ${method}`));
-        }, timeoutMs);
+      const expire = () => {
+        if (!pending.delete(id)) return;
+        entry.clearTimers();
+        reject(new Error(`Timeout: ${method}`));
+      };
+      const startTimer = () => setTimeout(expire, timeoutMs);
       const entry = {
         resolve,
         reject,
+        progressToken,
         timer: startTimer(),
+        hardTimer: setTimeout(expire, hardCapMs),
+        clearTimers() {
+          clearTimeout(entry.timer);
+          clearTimeout(entry.hardTimer);
+        },
         reset() {
           clearTimeout(entry.timer);
           entry.timer = startTimer();
@@ -267,7 +303,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       try {
         post({ jsonrpc: JSONRPC_VER, id, method, params });
       } catch (err) {
-        clearTimeout(entry.timer);
+        entry.clearTimers();
         pending.delete(id);
         reject(err);
       }
@@ -280,24 +316,40 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
 
   function teardownPending(reason) {
     for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
+      entry.clearTimers();
       entry.reject(new Error(reason));
     }
     pending.clear();
   }
 
-  function close() {
+  function resetConnectionState(reason) {
     initOk = false;
     hostCaps = null;
+    hostCtx = null;
     detachListener();
     resizeObserver?.disconnect();
     resizeObserver = null;
-    teardownPending("Closed");
+    teardownPending(reason);
+  }
+
+  function close() {
+    connEpoch += 1;
+    connPromise = null;
+    resetConnectionState("Closed");
   }
 
   async function callServerToolWithMetrics(params, opts = {}) {
+    if (!initOk) {
+      throw new Error("MCP bridge is not connected");
+    }
+    if (!self.hasServerTools()) {
+      throw new Error("MCP host does not advertise serverTools capability");
+    }
     const t0 = perfNow();
-    const result = await request("tools/call", params, { timeoutMs: opts.timeout ?? 75_000 });
+    const result = await request("tools/call", params, {
+      timeoutMs: opts.timeout ?? 75_000,
+      maxTimeoutMs: opts.maxTimeout,
+    });
     const totalMs = Math.max(0, perfNow() - t0);
     const rawServerMs = result?.structuredContent?.serverMs ?? result?.serverMs;
     const serverMs = Number.isFinite(rawServerMs) ? Number(rawServerMs) : 0;
@@ -344,13 +396,17 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     if (initOk) return Promise.resolve();
     if (connPromise) return connPromise;
 
+    const myEpoch = connEpoch;
     const maxRetries = Math.max(0, Number(connectOpts.retries ?? 0));
     const retryDelayMs = Math.max(0, Number(connectOpts.retryDelayMs ?? 200));
     const timeoutMs = Number(connectOpts.timeoutMs ?? 20_000);
 
-    connPromise = (async () => {
+    const p = (async () => {
       let lastErr = null;
       for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        if (myEpoch !== connEpoch) {
+          throw new Error("Closed");
+        }
         attachListener();
         try {
           const res = await request(
@@ -358,6 +414,9 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
             { appInfo, appCapabilities: caps, protocolVersion: LATEST_PROTOCOL_VERSION },
             { timeoutMs }
           );
+          if (myEpoch !== connEpoch) {
+            throw new Error("Closed");
+          }
           if (!res || typeof res !== "object" || res.protocolVersion !== LATEST_PROTOCOL_VERSION) {
             throw new Error(`Unsupported protocol version: ${res?.protocolVersion ?? "missing"}`);
           }
@@ -370,18 +429,27 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
           return;
         } catch (err) {
           lastErr = err;
-          close();
+          if (myEpoch !== connEpoch) {
+            throw new Error("Closed");
+          }
+          resetConnectionState("Handshake retry");
           if (attempt < maxRetries) {
             await new Promise((r) => setTimeout(r, retryDelayMs));
+            if (myEpoch !== connEpoch) {
+              throw new Error("Closed");
+            }
           }
         }
       }
       throw lastErr;
     })().finally(() => {
-      connPromise = null;
+      if (connPromise === p) {
+        connPromise = null;
+      }
     });
 
-    return connPromise;
+    connPromise = p;
+    return p;
   }
 
   return Object.assign(self, {

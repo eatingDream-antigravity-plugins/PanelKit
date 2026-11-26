@@ -5,23 +5,23 @@
   "files": {
     "src/mcp_protocol.rs": {
       "defaultDest": "src/kit/mcp_protocol.rs",
-      "sha256": "e050ebe04af57e7bf2b54fefadf2146b87e604b7049d6a5edc5cd90ddaf45791",
-      "bytes": 17609
+      "sha256": "ecfe9540958f5b19b330546d8d164e459ee753abe81c8d0d4c35f255ca53296e",
+      "bytes": 30572
     },
     "src/swr_cache.rs": {
       "defaultDest": "src/kit/swr_cache.rs",
-      "sha256": "4bc99fa602059a2557a0642be5525f7eba2bdf93cbe775dbeb5fb09c0951b190",
-      "bytes": 18076
+      "sha256": "4d6c16ed5212d4de50ccb989be2034ce011f3af687ccabb1d05158223d7fdbf4",
+      "bytes": 23123
     },
     "src/html_boot.rs": {
       "defaultDest": "src/kit/html_boot.rs",
-      "sha256": "94b4760ec83bf4e5b22035dd73f4938a08be2ec8d8cdd2e80893745c3776d9af",
-      "bytes": 11335
+      "sha256": "dbd32dd0b067f0c99f7c16f3048e4d9f83499577d767dedc026f98ebefed516a",
+      "bytes": 15456
     },
     "src/test_guard.rs": {
       "defaultDest": "src/kit/test_guard.rs",
-      "sha256": "d9b2e9e445825bb001fa986c65ba008ed207dfba7707d562d187cf5f1285f073",
-      "bytes": 2834
+      "sha256": "822fdce17fd1d8feced7a91e5883a3f8a2c85cb49aa3eca6c65eda8b853db258",
+      "bytes": 2841
     },
     "panel/tokens.css": {
       "defaultDest": "panel/kit/tokens.css",
@@ -30,23 +30,28 @@
     },
     "panel/bridge.js": {
       "defaultDest": "panel/kit/bridge.js",
-      "sha256": "d29bb953dfb1f6319a62fde492c8599cca17f0b01b00f30973144249a1d64450",
-      "bytes": 13942
+      "sha256": "9965faed78697036a4cbac3de6b0194db8766c7adf7fb67d8abee2421acf74c5",
+      "bytes": 16233
     },
     "panel/guard.mjs": {
       "defaultDest": "panel/kit/guard.mjs",
-      "sha256": "32931f97f7aad81bf06ce12fe1361e5d17319e2486ef9ebfb955b870d725f9b0",
-      "bytes": 7379
+      "sha256": "8b17ab471557148f387f1b408eda16344b699c94e5bf817c5b33d1f1d99ce674",
+      "bytes": 8925
     },
     "scripts/check_sanitized.sh": {
       "defaultDest": "scripts/check_sanitized.sh",
-      "sha256": "d64a6e3040898a459c6f5f0ac972e07bcf85f46bb6532398f8259d740c875af3",
-      "bytes": 1167
+      "sha256": "7aa545f0d123c02f4469ef86a5d8b8611e36372f9c9ce31df770e2062970ecc9",
+      "bytes": 1571
     },
     ".github/sanitize-patterns.txt": {
       "defaultDest": ".github/sanitize-patterns.txt",
-      "sha256": "9c518acf17cdafd8691336dd97359721c3a6bd3cdc894fb63b0e024ab7b5506e",
-      "bytes": 2315
+      "sha256": "bc59ab3845bb89d946ee23b45a50b9a2cd5a6087f928bc290ee17c66245dee66",
+      "bytes": 2419
+    },
+    "LICENSE": {
+      "defaultDest": "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE",
+      "sha256": "94a832673ac1536d4772bedd830cac719d1639a1a1dc286d8203bc1b077b90e2",
+      "bytes": 1068
     }
   }
 }

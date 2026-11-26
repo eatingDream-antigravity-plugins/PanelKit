@@ -9,12 +9,14 @@ pub mod swr_cache;
 pub mod test_guard;
 
 pub use html_boot::{
-    escape_json_for_inline_script, serialize_boot_json, CompiledTemplate, HtmlLoader,
+    escape_json_for_inline_script, is_safe_js_identifier, serialize_boot_json, CompiledTemplate,
+    HtmlLoader,
 };
 pub use mcp_protocol::{
     build_initialize_result, client_supports_mcp_apps, dispatch_jsonrpc, dispatch_jsonrpc_str,
-    filter_tools_for_session, invalid_request_error, is_tool_allowed_in_catalog, jsonrpc_error,
-    jsonrpc_ok, negotiate_protocol_version, parse_error, McpSession, ToolVisibility, APP_MIME,
+    dispatch_mcp_jsonrpc, filter_tools_for_session, invalid_request_error,
+    is_tool_allowed_in_catalog, is_tool_callable_by_in_catalog, jsonrpc_error, jsonrpc_ok,
+    negotiate_protocol_version, parse_error, McpSession, ToolCaller, ToolVisibility, APP_MIME,
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, LATEST_PROTOCOL_VERSION, METHOD_NOT_FOUND,
     PARSE_ERROR, SUPPORTED_PROTOCOL_VERSIONS, UI_EXTENSION,
 };

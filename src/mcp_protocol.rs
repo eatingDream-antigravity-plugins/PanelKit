@@ -54,30 +54,97 @@ impl McpSession {
         self.initialized = true;
         (self.protocol_version, self.apps_capable)
     }
+
+    /// Strict MCP `initialize` validation and negotiation.
+    ///
+    /// Rejects non-object params or missing/invalid `protocolVersion` (`String`),
+    /// `capabilities` (`Object`), or `clientInfo.name` (`String`) without marking
+    /// the session initialized.
+    pub fn try_negotiate(
+        &mut self,
+        init_params: &Value,
+    ) -> Result<(&'static str, bool), &'static str> {
+        let Some(obj) = init_params.as_object() else {
+            return Err("initialize params must be an object");
+        };
+        let requested = obj
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("initialize params missing string protocolVersion")?;
+        if !obj.get("capabilities").is_some_and(Value::is_object) {
+            return Err("initialize params missing object capabilities");
+        }
+        let client_name_ok = obj
+            .get("clientInfo")
+            .and_then(Value::as_object)
+            .and_then(|ci| ci.get("name"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if !client_name_ok {
+            return Err("initialize params missing clientInfo.name");
+        }
+        self.protocol_version = negotiate_protocol_version(Some(requested));
+        self.apps_capable = client_supports_mcp_apps(init_params);
+        self.initialized = true;
+        Ok((self.protocol_version, self.apps_capable))
+    }
+
+    /// Returns `true` if the negotiated MCP protocol version permits JSON-RPC batch arrays.
+    ///
+    /// MCP removed JSON-RPC batching starting in `2025-06-18`.
+    pub fn supports_jsonrpc_batch(&self) -> bool {
+        matches!(self.protocol_version, "2025-03-26" | "2024-11-05")
+    }
+}
+
+/// Trusted origin of a `tools/call` invocation for caller-aware authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCaller {
+    /// Invoked by the host model/agent session.
+    Model,
+    /// Invoked by an embedded SEP-1865 MCP App view over the host bridge.
+    App,
 }
 
 /// Tool visibility class for shared `tools/list` and `tools/call` enforcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolVisibility {
-    /// Available to standard model clients and MCP Apps sessions alike.
+    /// Available to both model clients and MCP Apps views.
     ModelAndApp,
+    /// Model-only tool (`_meta.ui.visibility: ["model"]`); hidden from app-only callers.
+    ModelOnly,
     /// App-only tool (`_meta.ui.visibility: ["app"]`); requires SEP-1865 `apps_capable`.
     AppOnly,
 }
 
 impl ToolVisibility {
-    /// Returns `true` if a tool with this visibility may be listed and invoked in the session.
+    /// Returns `true` if a tool with this visibility may be exposed in a session's tool catalog
+    /// (`tools/list`) given whether the session negotiated SEP-1865 `apps_capable`.
     pub fn is_allowed(self, apps_capable: bool) -> bool {
         match self {
-            ToolVisibility::ModelAndApp => true,
+            ToolVisibility::ModelAndApp | ToolVisibility::ModelOnly => true,
             ToolVisibility::AppOnly => apps_capable,
+        }
+    }
+
+    /// Caller-aware authorization check distinguishing model calls from embedded MCP App calls.
+    pub fn is_callable_by(self, caller: ToolCaller, apps_capable: bool) -> bool {
+        match (self, caller) {
+            (ToolVisibility::ModelAndApp, ToolCaller::Model) => true,
+            (ToolVisibility::ModelAndApp, ToolCaller::App) => apps_capable,
+            (ToolVisibility::ModelOnly, ToolCaller::Model) => true,
+            (ToolVisibility::ModelOnly, ToolCaller::App) => false,
+            (ToolVisibility::AppOnly, ToolCaller::Model) => false,
+            (ToolVisibility::AppOnly, ToolCaller::App) => apps_capable,
         }
     }
 
     /// Infers tool visibility from a serialized MCP tool definition's `_meta.ui.visibility`.
     ///
-    /// A tool is treated as [`ToolVisibility::AppOnly`] if and only if `_meta.ui.visibility`
-    /// is an array containing `"app"` and NOT containing `"model"`.
+    /// - `["app"]` (has `"app"`, not `"model"`) -> [`ToolVisibility::AppOnly`]
+    /// - `["model"]` (has `"model"`, not `"app"`) -> [`ToolVisibility::ModelOnly`]
+    /// - `["model", "app"]` or absent -> [`ToolVisibility::ModelAndApp`]
     pub fn from_tool_json(tool: &Value) -> Self {
         let vis = tool
             .get("_meta")
@@ -88,10 +155,10 @@ impl ToolVisibility {
             Some(arr) => {
                 let has_app = arr.iter().any(|v| v.as_str() == Some("app"));
                 let has_model = arr.iter().any(|v| v.as_str() == Some("model"));
-                if has_app && !has_model {
-                    ToolVisibility::AppOnly
-                } else {
-                    ToolVisibility::ModelAndApp
+                match (has_model, has_app) {
+                    (false, true) => ToolVisibility::AppOnly,
+                    (true, false) => ToolVisibility::ModelOnly,
+                    _ => ToolVisibility::ModelAndApp,
                 }
             }
             None => ToolVisibility::ModelAndApp,
@@ -132,8 +199,9 @@ pub fn client_supports_mcp_apps(init_params: &Value) -> bool {
 
 /// Builds a standards-compliant MCP `initialize` result payload.
 ///
-/// Only advertises `capabilities.extensions["io.modelcontextprotocol/ui"]` when
-/// `apps_capable` is `true`.
+/// Merges `extra_capabilities` cleanly (preserving sibling entries under `extensions`)
+/// and guarantees `capabilities.extensions["io.modelcontextprotocol/ui"]` is advertised
+/// if and only if `apps_capable` is `true`.
 pub fn build_initialize_result(
     server_name: &str,
     server_version: &str,
@@ -148,16 +216,45 @@ pub fn build_initialize_result(
     if let Some(Value::Object(extra)) = extra_capabilities {
         if let Some(cap_obj) = capabilities.as_object_mut() {
             for (k, v) in extra {
-                cap_obj.insert(k, v);
+                if k == "extensions" {
+                    if let Value::Object(ext_map) = v {
+                        let entry = cap_obj
+                            .entry("extensions".to_string())
+                            .or_insert_with(|| json!({}));
+                        if let Some(existing_ext) = entry.as_object_mut() {
+                            for (ek, ev) in ext_map {
+                                existing_ext.insert(ek, ev);
+                            }
+                        }
+                    }
+                } else {
+                    cap_obj.insert(k, v);
+                }
             }
         }
     }
-    if apps_capable {
-        capabilities["extensions"] = json!({
-            UI_EXTENSION: {
-                "mimeTypes": [APP_MIME]
+    if let Some(cap_obj) = capabilities.as_object_mut() {
+        if apps_capable {
+            let ext_val = cap_obj
+                .entry("extensions".to_string())
+                .or_insert_with(|| json!({}));
+            if !ext_val.is_object() {
+                *ext_val = json!({});
             }
-        });
+            if let Some(ext_obj) = ext_val.as_object_mut() {
+                ext_obj.insert(
+                    UI_EXTENSION.to_string(),
+                    json!({
+                        "mimeTypes": [APP_MIME]
+                    }),
+                );
+            }
+        } else if let Some(ext_obj) = cap_obj.get_mut("extensions").and_then(Value::as_object_mut) {
+            ext_obj.remove(UI_EXTENSION);
+            if ext_obj.is_empty() {
+                cap_obj.remove("extensions");
+            }
+        }
     }
     json!({
         "protocolVersion": protocol_version,
@@ -178,13 +275,28 @@ pub fn filter_tools_for_session(tools: &[Value], apps_capable: bool) -> Vec<Valu
         .collect()
 }
 
-/// Shared authorization check for `tools/call` against the same tool catalog used by `tools/list`.
+/// Session-level capability gate for `tools/call` against the same tool catalog used by `tools/list`.
 ///
-/// Returns `true` only if `tool_name` exists in `tools` AND its visibility allows the session.
+/// Returns `true` only if `tool_name` exists in `tools` AND the session's `apps_capable` state
+/// allows exposing it. When the server can distinguish model vs. embedded-app callers, prefer
+/// [`is_tool_callable_by_in_catalog`].
 pub fn is_tool_allowed_in_catalog(tool_name: &str, tools: &[Value], apps_capable: bool) -> bool {
     tools.iter().any(|tool| {
         tool.get("name").and_then(Value::as_str) == Some(tool_name)
             && ToolVisibility::from_tool_json(tool).is_allowed(apps_capable)
+    })
+}
+
+/// Caller-aware authorization check for `tools/call` enforcing SEP-1865 `model` vs `app` visibility.
+pub fn is_tool_callable_by_in_catalog(
+    tool_name: &str,
+    tools: &[Value],
+    caller: ToolCaller,
+    apps_capable: bool,
+) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("name").and_then(Value::as_str) == Some(tool_name)
+            && ToolVisibility::from_tool_json(tool).is_callable_by(caller, apps_capable)
     })
 }
 
@@ -219,7 +331,23 @@ pub fn parse_error(message: impl Into<String>) -> Value {
     jsonrpc_error(Value::Null, PARSE_ERROR, message)
 }
 
-fn dispatch_single_item<F>(item: &Value, handler: &mut F) -> Option<Value>
+fn is_valid_jsonrpc_id(val: &Value) -> bool {
+    matches!(val, Value::String(_) | Value::Number(_) | Value::Null)
+}
+
+fn is_valid_mcp_id(val: &Value) -> bool {
+    match val {
+        Value::String(_) => true,
+        Value::Number(n) => n.is_i64() || n.is_u64(),
+        _ => false,
+    }
+}
+
+fn is_valid_jsonrpc_params(val: &Value) -> bool {
+    matches!(val, Value::Object(_) | Value::Array(_))
+}
+
+fn dispatch_single_item<F>(item: &Value, strict_mcp_id: bool, handler: &mut F) -> Option<Value>
 where
     F: FnMut(&Value) -> Option<Value>,
 {
@@ -227,16 +355,27 @@ where
         return Some(invalid_request_error("Invalid Request"));
     };
 
-    let id = obj.get("id").cloned();
+    let raw_id = obj.get("id");
+    let id_valid = match raw_id {
+        None => true,
+        Some(v) if strict_mcp_id => is_valid_mcp_id(v),
+        Some(v) => is_valid_jsonrpc_id(v),
+    };
+    let safe_err_id = match raw_id {
+        Some(v) if is_valid_jsonrpc_id(v) => v.clone(),
+        _ => Value::Null,
+    };
+
     let valid_version = obj.get("jsonrpc").and_then(Value::as_str) == Some("2.0");
     let valid_method = obj
         .get("method")
         .and_then(Value::as_str)
         .is_some_and(|m| !m.is_empty());
+    let valid_params = obj.get("params").map_or(true, is_valid_jsonrpc_params);
 
-    if !valid_version || !valid_method {
+    if !id_valid || !valid_version || !valid_method || !valid_params {
         return Some(jsonrpc_error(
-            id.unwrap_or(Value::Null),
+            if id_valid { safe_err_id } else { Value::Null },
             INVALID_REQUEST,
             "Invalid Request",
         ));
@@ -244,11 +383,16 @@ where
 
     let resp = handler(item);
     // JSON-RPC 2.0 notifications (absent `id`) MUST NOT emit a response.
-    if id.is_none() {
-        None
-    } else {
-        resp
-    }
+    // Requests (present `id`) MUST always emit a response.
+    raw_id.map(|req_id| {
+        resp.unwrap_or_else(|| {
+            jsonrpc_error(
+                req_id.clone(),
+                INTERNAL_ERROR,
+                "Internal error: handler returned no response for request",
+            )
+        })
+    })
 }
 
 /// Dispatches either a single JSON-RPC 2.0 message or a batch array `[...]`.
@@ -257,7 +401,9 @@ where
 /// - Empty batch `[]` returns `Some(-32600 Invalid Request)`.
 /// - Notification-only single message or batch returns `None` (no wire reply).
 /// - Mixed batches omit notifications and return only responses in a JSON array.
-/// - Non-object entries or malformed requests return `-32600 Invalid Request`.
+/// - Non-object entries, invalid `id` types, scalar `params`, or malformed requests return
+///   `-32600 Invalid Request` (never echoing invalid `id` values).
+/// - Requests with a valid `id` always receive a response (`-32603` if handler returns `None`).
 pub fn dispatch_jsonrpc<F>(msg: &Value, mut handler: F) -> Option<Value>
 where
     F: FnMut(&Value) -> Option<Value>,
@@ -268,7 +414,7 @@ where
         }
         let responses: Vec<Value> = batch
             .iter()
-            .filter_map(|item| dispatch_single_item(item, &mut handler))
+            .filter_map(|item| dispatch_single_item(item, false, &mut handler))
             .collect();
         if responses.is_empty() {
             None
@@ -276,7 +422,53 @@ where
             Some(Value::Array(responses))
         }
     } else {
-        dispatch_single_item(msg, &mut handler)
+        dispatch_single_item(msg, false, &mut handler)
+    }
+}
+
+/// MCP-aware JSON-RPC 2.0 dispatcher enforcing protocol lifecycle and batching rules.
+///
+/// In addition to [`dispatch_jsonrpc`] checks, this enforces:
+/// - MCP request `id` MUST be a string or integer (never `null`, float, bool, array, or object).
+/// - JSON-RPC batch arrays are rejected when `initialize` is inside a batch (forbidden by MCP
+///   `2025-03-26`) or when the negotiated session version is `2025-06-18` or newer (batching
+///   removed from MCP).
+pub fn dispatch_mcp_jsonrpc<F>(session: &McpSession, msg: &Value, mut handler: F) -> Option<Value>
+where
+    F: FnMut(&Value) -> Option<Value>,
+{
+    if let Some(batch) = msg.as_array() {
+        if batch.is_empty() {
+            return Some(invalid_request_error("Invalid Request: empty batch"));
+        }
+        let contains_initialize = batch.iter().any(|item| {
+            item.as_object()
+                .and_then(|o| o.get("method"))
+                .and_then(Value::as_str)
+                == Some("initialize")
+        });
+        if contains_initialize {
+            return Some(invalid_request_error(
+                "Invalid Request: initialize cannot be sent in a JSON-RPC batch",
+            ));
+        }
+        if !session.supports_jsonrpc_batch() {
+            return Some(invalid_request_error(format!(
+                "Invalid Request: JSON-RPC batching is not supported in MCP {}",
+                session.protocol_version
+            )));
+        }
+        let responses: Vec<Value> = batch
+            .iter()
+            .filter_map(|item| dispatch_single_item(item, true, &mut handler))
+            .collect();
+        if responses.is_empty() {
+            None
+        } else {
+            Some(Value::Array(responses))
+        }
+    } else {
+        dispatch_single_item(msg, true, &mut handler)
     }
 }
 
@@ -473,5 +665,134 @@ mod tests {
         // Invalid JSON -> -32700 Parse Error
         let bad_json = dispatch_jsonrpc_str("{not-json", &mut handle).expect("parse error");
         assert_eq!(bad_json["error"]["code"], PARSE_ERROR);
+    }
+
+    #[test]
+    fn enforces_mcp_batch_rules_strict_ids_extensions_merge_and_caller_visibility() {
+        // 1. build_initialize_result merges sibling extensions & strips UI_EXTENSION when apps_capable=false
+        let extra = json!({
+            "extensions": {
+                "com.example/telemetry": { "enabled": true },
+                "io.modelcontextprotocol/ui": { "mimeTypes": ["text/html;profile=mcp-app"] }
+            }
+        });
+        let no_apps =
+            build_initialize_result("demo", "0.1.0", "2025-11-25", false, Some(extra.clone()));
+        assert_eq!(
+            no_apps["capabilities"]["extensions"]["com.example/telemetry"]["enabled"],
+            true
+        );
+        assert!(no_apps["capabilities"]["extensions"]
+            .get(UI_EXTENSION)
+            .is_none());
+
+        let with_apps = build_initialize_result("demo", "0.1.0", "2025-11-25", true, Some(extra));
+        assert_eq!(
+            with_apps["capabilities"]["extensions"]["com.example/telemetry"]["enabled"],
+            true
+        );
+        assert_eq!(
+            with_apps["capabilities"]["extensions"][UI_EXTENSION]["mimeTypes"],
+            json!([APP_MIME])
+        );
+
+        // 2. ModelOnly vs AppOnly vs ModelAndApp caller authorization
+        let catalog = vec![
+            json!({"name": "model_only", "_meta": {"ui": {"visibility": ["model"]}}}),
+            json!({"name": "app_only", "_meta": {"ui": {"visibility": ["app"]}}}),
+            json!({"name": "both", "_meta": {"ui": {"visibility": ["model", "app"]}}}),
+        ];
+        assert!(is_tool_callable_by_in_catalog(
+            "model_only",
+            &catalog,
+            ToolCaller::Model,
+            true
+        ));
+        assert!(!is_tool_callable_by_in_catalog(
+            "model_only",
+            &catalog,
+            ToolCaller::App,
+            true
+        ));
+        assert!(!is_tool_callable_by_in_catalog(
+            "app_only",
+            &catalog,
+            ToolCaller::Model,
+            true
+        ));
+        assert!(is_tool_callable_by_in_catalog(
+            "app_only",
+            &catalog,
+            ToolCaller::App,
+            true
+        ));
+        assert!(!is_tool_callable_by_in_catalog(
+            "app_only",
+            &catalog,
+            ToolCaller::App,
+            false
+        ));
+
+        // 3. try_negotiate validates required fields and leaves session uninitialized on error
+        let mut session = McpSession::default();
+        assert!(session.try_negotiate(&json!({})).is_err());
+        assert!(!session.initialized);
+        let (ver, apps) = session
+            .try_negotiate(&json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "test-client", "version": "1.0" }
+            }))
+            .unwrap();
+        assert_eq!(ver, "2025-11-25");
+        assert!(!apps);
+        assert!(session.initialized);
+        assert!(!session.supports_jsonrpc_batch());
+
+        // 4. dispatch_mcp_jsonrpc rejects batches on 2025-11-25, null id, scalar params, and None responses
+        let batch_err = dispatch_mcp_jsonrpc(
+            &session,
+            &json!([{"jsonrpc": "2.0", "id": 1, "method": "ping"}]),
+            |_| Some(jsonrpc_ok(json!(1), json!({}))),
+        )
+        .unwrap();
+        assert_eq!(batch_err["error"]["code"], INVALID_REQUEST);
+
+        let null_id_err = dispatch_mcp_jsonrpc(
+            &session,
+            &json!({"jsonrpc": "2.0", "id": null, "method": "ping"}),
+            |_| Some(jsonrpc_ok(Value::Null, json!({}))),
+        )
+        .unwrap();
+        assert_eq!(null_id_err["error"]["code"], INVALID_REQUEST);
+
+        let bad_params_err = dispatch_jsonrpc(
+            &json!({"jsonrpc": "2.0", "id": [1], "method": "ping", "params": 123}),
+            |_| Some(jsonrpc_ok(json!(1), json!({}))),
+        )
+        .unwrap();
+        assert_eq!(bad_params_err["id"], Value::Null);
+        assert_eq!(bad_params_err["error"]["code"], INVALID_REQUEST);
+
+        let missing_resp_err = dispatch_mcp_jsonrpc(
+            &session,
+            &json!({"jsonrpc": "2.0", "id": 7, "method": "ping"}),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(missing_resp_err["id"], 7);
+        assert_eq!(missing_resp_err["error"]["code"], INTERNAL_ERROR);
+
+        // 5. Legacy 2025-03-26 session still rejects batched initialize
+        let mut legacy = McpSession::default();
+        legacy.negotiate(&json!({"protocolVersion": "2025-03-26"}));
+        assert!(legacy.supports_jsonrpc_batch());
+        let batched_init = dispatch_mcp_jsonrpc(
+            &legacy,
+            &json!([{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}]),
+            |_| Some(jsonrpc_ok(json!(1), json!({}))),
+        )
+        .unwrap();
+        assert_eq!(batched_init["error"]["code"], INVALID_REQUEST);
     }
 }

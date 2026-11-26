@@ -266,7 +266,99 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
     assert.ok(parseColorLum("#141311") < 0.2);
     assert.ok(parseColorLum("#FAF8F4") > 0.9);
     assert.equal(applyHostContext({ theme: "dark" }, env.doc), "dark");
+
+    // Calling callServerTool without serverTools capability must reject cleanly
+    await assert.rejects(
+      () => app.callServerTool({ name: "demo", arguments: {} }),
+      /serverTools/
+    );
     app.close();
+    // Calling callServerTool after close() must reject as disconnected
+    await assert.rejects(
+      () => app.callServerTool({ name: "demo", arguments: {} }),
+      /not connected/
+    );
+  });
+
+  it("cancels in-flight connect() retries on close(), pins targetOrigin, and scopes progress timers by token", async () => {
+    const env = makeFakeEnv();
+    let attempts = 0;
+    const parent = {
+      postMessage(msg, origin) {
+        env.sentToParent.push({ msg, origin });
+        if (msg.method === "ui/initialize") {
+          attempts += 1;
+          setTimeout(() => {
+            env.win.emit("message", {
+              source: parent,
+              origin: "https://trusted.host",
+              data: {
+                jsonrpc: "2.0",
+                id: msg.id,
+                result: {
+                  protocolVersion: "2020-01-01",
+                  hostCapabilities: { serverTools: {} },
+                },
+              },
+            });
+          }, 5);
+        }
+      },
+    };
+    env.win.parent = parent;
+
+    const app = App(
+      { name: "cancel-test", version: "0.1.0" },
+      {},
+      { window: env.win, document: env.doc, targetOrigin: "https://trusted.host" }
+    );
+    const conn = app.connect({ retries: 3, retryDelayMs: 25, timeoutMs: 500 });
+    // Close during the first handshake attempt -> must cancel retries and never become connected
+    app.close();
+    await assert.rejects(() => conn, /Closed/);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(attempts, 1);
+    assert.equal(app.isConnected(), false);
+    assert.equal(app.getHostContext(), null);
+    assert.equal(env.sentToParent[0].origin, "https://trusted.host");
+
+    // Progress notification for token A must NOT keep token B alive forever
+    const env2 = makeFakeEnv();
+    const parent2 = {
+      postMessage(msg) {
+        if (msg.method === "ui/initialize") {
+          setImmediate(() =>
+            env2.win.emit("message", {
+              source: parent2,
+              origin: "https://trusted.host",
+              data: {
+                jsonrpc: "2.0",
+                id: msg.id,
+                result: { protocolVersion: LATEST_PROTOCOL_VERSION, hostCapabilities: { serverTools: {} } },
+              },
+            })
+          );
+        }
+      },
+    };
+    env2.win.parent = parent2;
+    const app2 = App(
+      { name: "prog-test", version: "0.1.0" },
+      {},
+      { window: env2.win, document: env2.doc, targetOrigin: "https://trusted.host" }
+    );
+    await app2.connect();
+    const slowReq = app2.request("tools/call", { name: "b", _meta: { progressToken: "tok-B" } }, { timeoutMs: 35 });
+    const interval = setInterval(() => {
+      env2.win.emit("message", {
+        source: parent2,
+        origin: "https://trusted.host",
+        data: { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "tok-A", progress: 1 } },
+      });
+    }, 10);
+    await assert.rejects(() => slowReq, /Timeout: tools\/call/);
+    clearInterval(interval);
+    app2.close();
   });
 });
 
@@ -287,7 +379,9 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       ["byte budget exceeded", buildValidPanelHtml(), { maxBytes: 100 }],
       ["multiple scripts", buildValidPanelHtml({ scriptBlock: "<script>1</script><script>2</script>" }), {}],
       ["missing CSP", buildValidPanelHtml({ cspTag: "" }), {}],
-      ["external URL", buildValidPanelHtml({ scriptBlock: '<script>const u="https://cdn.example.com/a.js";</script>' }), {}],
+      ["CSP outside head", buildValidPanelHtml({ cspTag: "", bodyTag: '<body style="background:#141311"><!-- default-src \'none\' -->' }), {}],
+      ["external URL", buildValidPanelHtml({ scriptBlock: '<script>const u="https://user:secret@cdn.example.com/a.js?token=TOPSECRET";</script>' }), {}],
+      ["protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#141311"><img src="//cdn.example.com/x.png">' }), {}],
       ["missing dark html lock", buildValidPanelHtml({ htmlTag: "<html>" }), {}],
       ["missing dark meta lock", buildValidPanelHtml({ metaTag: '<meta name="color-scheme" content="dark light">' }), {}],
       ["missing dark body lock", buildValidPanelHtml({ bodyTag: "<body>" }), {}],
@@ -295,6 +389,8 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       ["opacity:0 keyframe", buildValidPanelHtml({ css: `${TOKENS_CSS}\n@keyframes fade{from{opacity:0}to{opacity:1}}` }), {}],
       ["innerHTML assignment", buildValidPanelHtml({ scriptBlock: "<script>el.innerHTML='x';</script>" }), {}],
       ["outerHTML assignment", buildValidPanelHtml({ scriptBlock: "<script>el.outerHTML='x';</script>" }), {}],
+      ["insertAdjacentHTML sink", buildValidPanelHtml({ scriptBlock: "<script>el.insertAdjacentHTML('beforeend','x');</script>" }), {}],
+      ["top-level return syntax error", buildValidPanelHtml({ scriptBlock: "<script>return 1;</script>" }), {}],
       ["--buncss-* leakage", buildValidPanelHtml({ css: `${TOKENS_CSS}\n.x{--buncss-foo:1}` }), {}],
       ["wrong light --ok color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#2F7D53", "#3D8B60") }), {}],
       ["missing family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s0: #EAE5DC;", "") }), {}],
@@ -304,13 +400,17 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
     for (const [label, html, opts] of cases) {
       const res = checkPanelInvariants(html, opts);
       assert.equal(res.ok, false, `expected guard failure for: ${label}`);
+      if (label === "external URL") {
+        assert.equal(res.errors.join(" ").includes("TOPSECRET"), false, "URL query secrets must be redacted");
+        assert.equal(res.errors.join(" ").includes("user:secret"), false, "URL userinfo must be redacted");
+      }
       assert.throws(() => assertPanelInvariants(html, opts), /Panel invariant gate failed/, label);
     }
   });
 });
 
 describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
-  it("syncs kit files, passes --check on zero drift, and fails --check when modified", () => {
+  it("syncs kit files with MIT LICENSE, merges selective syncs, protects local edits, and rejects path traversal/symlinks", () => {
     const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kit-sync-test-"));
     try {
       const syncScript = path.join(REPO_ROOT, "scripts", "sync-kit.sh");
@@ -318,7 +418,7 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       // Manifest self-check must pass
       execFileSync("bash", [syncScript, "--check-manifest"], { cwd: REPO_ROOT, stdio: "pipe" });
 
-      // Sync selected files into temp target repo
+      // Sync selected files into temp target repo (MIT LICENSE auto-included)
       execFileSync(
         "bash",
         [syncScript, "--files", "src/test_guard.rs,panel/tokens.css,panel/guard.mjs", tmpRepo],
@@ -329,28 +429,82 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       assert.ok(fs.existsSync(path.join(tmpRepo, "src/kit/test_guard.rs")));
       assert.ok(fs.existsSync(path.join(tmpRepo, "panel/kit/tokens.css")));
       assert.ok(fs.existsSync(path.join(tmpRepo, "panel/kit/guard.mjs")));
+      assert.ok(fs.existsSync(path.join(tmpRepo, "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE")));
+
+      // Selective re-sync of 1 file MUST merge (preserve previously tracked files in .agy-kit-sync.json)
+      execFileSync(
+        "bash",
+        [syncScript, "--files", "src/test_guard.rs", tmpRepo],
+        { cwd: REPO_ROOT, stdio: "pipe" }
+      );
+      const syncMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8"));
+      assert.ok(syncMeta.files["panel/kit/tokens.css"], "selective sync must keep previously tracked files");
 
       // Zero-drift check passes
       execFileSync("bash", [syncScript, "--check", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" });
 
-      // Mutate a synced file -> --check MUST fail non-zero
+      // Mutate a synced file -> --check MUST fail, and sync without --force MUST refuse overwrite
       fs.appendFileSync(path.join(tmpRepo, "panel/kit/tokens.css"), "\n/* local drift */\n");
       assert.throws(
         () => execFileSync("bash", [syncScript, "--check", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" }),
         /Command failed/
       );
+      assert.throws(
+        () => execFileSync("bash", [syncScript, "--files", "panel/tokens.css", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" }),
+        /Command failed/
+      );
+      // --force explicitly overwrites local edits cleanly
+      execFileSync("bash", [syncScript, "--force", "--files", "panel/tokens.css", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" });
+      execFileSync("bash", [syncScript, "--check", tmpRepo], { cwd: REPO_ROOT, stdio: "pipe" });
+
+      // P0: Reject path traversal via --map and via poisoned .agy-kit-sync.json
+      assert.throws(
+        () =>
+          execFileSync(
+            "bash",
+            [syncScript, "--files", "src/test_guard.rs", "--map", "src/test_guard.rs=../escape.rs", tmpRepo],
+            { cwd: REPO_ROOT, stdio: "pipe" }
+          ),
+        /Command failed/
+      );
+      assert.throws(
+        () =>
+          execFileSync(
+            "bash",
+            [syncScript, "--files", "src/test_guard.rs", "--map", "src/test_guard.rs=.git/hooks/pre-commit", tmpRepo],
+            { cwd: REPO_ROOT, stdio: "pipe" }
+          ),
+        /Command failed/
+      );
+
+      // P0: Reject symlinked destination
+      const outside = path.join(os.tmpdir(), `agy-kit-outside-${process.pid}.txt`);
+      fs.writeFileSync(outside, "do-not-touch\n");
+      try {
+        fs.symlinkSync(outside, path.join(tmpRepo, "evil-link.rs"));
+        assert.throws(
+          () =>
+            execFileSync(
+              "bash",
+              [syncScript, "--force", "--files", "src/test_guard.rs", "--map", "src/test_guard.rs=evil-link.rs", tmpRepo],
+              { cwd: REPO_ROOT, stdio: "pipe" }
+            ),
+          /Command failed/
+        );
+        assert.equal(fs.readFileSync(outside, "utf8"), "do-not-touch\n");
+      } finally {
+        fs.rmSync(outside, { force: true });
+      }
     } finally {
       fs.rmSync(tmpRepo, { recursive: true, force: true });
     }
   });
 
-  it("check_sanitized.sh redacts secret contents and fails closed on errors", () => {
+  it("check_sanitized.sh scans working tree and staged index, redacts secrets, and fails closed", () => {
     const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kit-sanitize-test-"));
     try {
       const syncScript = path.join(REPO_ROOT, "scripts", "sync-kit.sh");
       execFileSync("git", ["init", "-q", "-b", "main"], { cwd: tmpRepo });
-      execFileSync("git", ["config", "user.name", "test"], { cwd: tmpRepo });
-      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tmpRepo });
       execFileSync(
         "bash",
         [syncScript, "--files", "scripts/check_sanitized.sh,.github/sanitize-patterns.txt", tmpRepo],
@@ -359,10 +513,12 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       execFileSync("git", ["add", "."], { cwd: tmpRepo });
       execFileSync("bash", ["scripts/check_sanitized.sh"], { cwd: tmpRepo, stdio: "pipe" });
 
-      // Inject a synthetic token pattern at runtime so this test file itself stays clean
+      // Inject a synthetic token pattern into staged index ONLY (then clear working tree copy)
       const fakeSecret = ["ghp", "_"].join("") + "9".repeat(36);
       fs.writeFileSync(path.join(tmpRepo, "leak.txt"), `token=${fakeSecret}\n`);
       execFileSync("git", ["add", "leak.txt"], { cwd: tmpRepo });
+      fs.writeFileSync(path.join(tmpRepo, "leak.txt"), "clean-in-worktree\n");
+
       let stderr = "";
       let failed = false;
       try {
@@ -371,9 +527,16 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
         failed = true;
         stderr = String(err.stderr || "") + String(err.stdout || "");
       }
-      assert.equal(failed, true, "check_sanitized.sh must fail on matched secret");
+      assert.equal(failed, true, "check_sanitized.sh must catch staged-only secret");
       assert.ok(stderr.includes("leak.txt:1"), "must report file:line");
       assert.equal(stderr.includes(fakeSecret), false, "must NEVER echo secret content");
+
+      // Missing patterns file -> fails closed with exit code 2
+      fs.rmSync(path.join(tmpRepo, ".github/sanitize-patterns.txt"));
+      assert.throws(
+        () => execFileSync("bash", ["scripts/check_sanitized.sh"], { cwd: tmpRepo, stdio: "pipe" }),
+        /Command failed/
+      );
     } finally {
       fs.rmSync(tmpRepo, { recursive: true, force: true });
     }

@@ -59,6 +59,7 @@ impl<T> Clone for SwrSnapshot<T> {
 struct SwrState<T> {
     value: Option<Arc<T>>,
     rev: u64,
+    generation: u64,
     updated_at: Option<Instant>,
     forced_stale: bool,
     in_flight: bool,
@@ -117,6 +118,7 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                 state: Mutex::new(SwrState {
                     value: None,
                     rev: 0,
+                    generation: 0,
                     updated_at: None,
                     forced_stale: false,
                     in_flight: false,
@@ -144,23 +146,36 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
 
     /// Marks the currently cached value stale without dropping it so subsequent warm reads
     /// still return immediately while kicking off a background revalidation.
+    ///
+    /// Advances the internal state generation so any older in-flight refresh cannot clear
+    /// this invalidation or overwrite newer state when it finishes.
     pub fn invalidate(&self) {
         let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.generation = st.generation.wrapping_add(1);
         st.forced_stale = true;
     }
 
     /// Directly installs a freshly computed value (for example, after a mutating command),
     /// increments the monotonic `rev` counter, marks it fresh, and returns the new `rev`.
+    ///
+    /// Advances the internal state generation so any older in-flight refresh cannot overwrite
+    /// this value, and drops any replaced `Arc<T>` outside the mutex lock.
     pub fn set_value(&self, value: T) -> u64 {
-        let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.rev = st.rev.saturating_add(1);
-        st.value = Some(Arc::new(value));
-        st.updated_at = Some(Instant::now());
-        st.forced_stale = false;
-        st.last_error = None;
-        st.last_error_at = None;
-        let rev = st.rev;
-        self.inner.cvar.notify_all();
+        let new_arc = Arc::new(value);
+        let (rev, old_val) = {
+            let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.generation = st.generation.wrapping_add(1);
+            st.rev = st.rev.saturating_add(1);
+            let old = st.value.replace(new_arc);
+            st.updated_at = Some(Instant::now());
+            st.forced_stale = false;
+            st.last_error = None;
+            st.last_error_at = None;
+            let rev = st.rev;
+            self.inner.cvar.notify_all();
+            (rev, old)
+        };
+        drop(old_val);
         rev
     }
 
@@ -221,6 +236,14 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                 let _ = self.spawn_refresh_locked(&mut st);
             }
             return Ok(snap);
+        }
+
+        // Cold path: respect error_backoff before spawning a new loader thread.
+        if !st.in_flight && self.in_error_backoff_locked(&st) {
+            return Err(st
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "cache refresh in error backoff".to_string()));
         }
 
         // Cold path: start (or coalesce onto) the single in-flight refresh.
@@ -291,6 +314,7 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
             return false;
         }
         st.in_flight = true;
+        let refresh_gen = st.generation;
 
         let inner = Arc::clone(&self.inner);
         let thread_name = inner.config.thread_name.clone();
@@ -300,24 +324,32 @@ impl<T: Send + Sync + 'static> SwrCache<T> {
                 completed: false,
             };
             let res = (inner.loader)();
-            let mut st = inner.state.lock().unwrap_or_else(|e| e.into_inner());
-            match res {
-                Ok(val) => {
-                    st.rev = st.rev.saturating_add(1);
-                    st.value = Some(Arc::new(val));
-                    st.updated_at = Some(Instant::now());
-                    st.forced_stale = false;
-                    st.last_error = None;
-                    st.last_error_at = None;
+            let old_val = {
+                let mut st = inner.state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut replaced = None;
+                if st.generation == refresh_gen {
+                    match res {
+                        Ok(val) => {
+                            st.rev = st.rev.saturating_add(1);
+                            replaced = st.value.replace(Arc::new(val));
+                            st.updated_at = Some(Instant::now());
+                            st.forced_stale = false;
+                            st.last_error = None;
+                            st.last_error_at = None;
+                        }
+                        Err(err) => {
+                            st.last_error = Some(err);
+                            st.last_error_at = Some(Instant::now());
+                        }
+                    }
                 }
-                Err(err) => {
-                    st.last_error = Some(err);
-                    st.last_error_at = Some(Instant::now());
-                }
-            }
-            st.in_flight = false;
-            guard.completed = true;
-            inner.cvar.notify_all();
+                st.in_flight = false;
+                guard.completed = true;
+                inner.cvar.notify_all();
+                replaced
+            };
+            // Drop any previous Arc<T> strictly outside the state mutex.
+            drop(old_val);
         });
 
         if let Err(err) = spawn_res {
@@ -516,5 +548,105 @@ mod tests {
         thread::sleep(Duration::from_millis(160));
         let snap = cache.get_or_trigger_refresh().unwrap();
         assert_eq!(*snap.value, 42);
+    }
+
+    #[test]
+    fn stale_refresh_does_not_overwrite_newer_set_value_or_invalidate() {
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let s_clone = Arc::clone(&started);
+        let r_clone = Arc::clone(&release);
+
+        let cache = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_secs(30),
+                cold_wait_timeout: Duration::ZERO,
+                error_backoff: Duration::ZERO,
+                thread_name: "test-swr-gen".into(),
+            },
+            Arc::new(move || {
+                s_clone.wait();
+                r_clone.wait();
+                Ok("stale-from-loader".to_string())
+            }),
+        );
+
+        assert!(cache.force_refresh_async());
+        started.wait();
+
+        // While loader is in flight, install a newer value directly.
+        let rev = cache.set_value("newer-mutation".to_string());
+        assert_eq!(rev, 1);
+
+        // Let the older in-flight loader finish.
+        release.wait();
+        let wait_start = Instant::now();
+        while cache.in_flight() && wait_start.elapsed() < Duration::from_secs(1) {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // The newer value and revision MUST remain intact.
+        let snap = cache.get_or_trigger_refresh().unwrap();
+        assert_eq!(*snap.value, "newer-mutation");
+        assert_eq!(snap.rev, 1);
+        assert!(!snap.stale);
+    }
+
+    #[test]
+    fn cold_path_respects_error_backoff_and_drops_old_value_outside_lock() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+
+        let failing_cache: SwrCache<String> = SwrCache::new(
+            SwrConfig {
+                fresh_ttl: Duration::from_secs(5),
+                cold_wait_timeout: Duration::from_secs(1),
+                error_backoff: Duration::from_secs(60),
+                thread_name: "test-swr-backoff".into(),
+            },
+            Arc::new(move || {
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+                Err("transient failure".to_string())
+            }),
+        );
+
+        assert_eq!(
+            failing_cache.get_or_trigger_refresh().unwrap_err(),
+            "transient failure"
+        );
+        // Second cold read inside error_backoff must NOT re-invoke loader.
+        assert_eq!(
+            failing_cache.get_or_trigger_refresh().unwrap_err(),
+            "transient failure"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Verify Drop runs outside mutex by re-entering the cache during Drop.
+        struct ReentrantDrop {
+            on_drop: Box<dyn Fn() + Send + Sync>,
+        }
+        impl Drop for ReentrantDrop {
+            fn drop(&mut self) {
+                (self.on_drop)();
+            }
+        }
+
+        let cache: SwrCache<ReentrantDrop> =
+            SwrCache::new(SwrConfig::default(), Arc::new(|| Err("unused".to_string())));
+        let cache_for_drop = cache.clone();
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropped_flag = Arc::clone(&dropped);
+
+        cache.set_value(ReentrantDrop {
+            on_drop: Box::new(move || {
+                // Would deadlock if Drop ran while holding inner.state mutex.
+                assert_eq!(cache_for_drop.current_rev(), 2);
+                dropped_flag.store(true, Ordering::SeqCst);
+            }),
+        });
+        cache.set_value(ReentrantDrop {
+            on_drop: Box::new(|| {}),
+        });
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

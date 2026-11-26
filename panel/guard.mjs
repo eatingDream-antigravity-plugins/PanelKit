@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 export const DEFAULT_MAX_BYTES = 43_500;
 export const WARN_BYTES = 44_000;
@@ -19,6 +20,15 @@ export const FAMILY_TOKENS = Object.freeze([
 function extractCssBlock(css, selectorRegex) {
   const m = css.match(selectorRegex);
   return m ? m[1] : null;
+}
+
+function redactUrlForLog(rawUrl) {
+  try {
+    const u = new URL(rawUrl.startsWith("//") ? `https:${rawUrl}` : rawUrl);
+    return `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return rawUrl.split(/[?#]/)[0].replace(/\/\/[^/@]+@/, "//[redacted]@");
+  }
 }
 
 /**
@@ -50,14 +60,26 @@ export function checkPanelInvariants(html, options = {}) {
     warnings.push(`panel size warning: ${bytes} B > ${warnBytes} B`);
   }
 
-  // CSP & zero external URLs (allow standard XML SVG namespace only)
-  if (!/default-src\s+'none'/i.test(html)) {
-    errors.push("missing CSP directive: default-src 'none'");
+  // CSP must be declared inside <head> via <meta http-equiv="Content-Security-Policy" ...>
+  const headMatch = html.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i);
+  const headHtml = headMatch ? headMatch[1] : "";
+  const cspMetaTags = headHtml.match(/<meta\b[^>]*http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi) || [];
+  const hasValidCsp = cspMetaTags.some((tag) =>
+    /content\s*=\s*["'][^"']*default-src\s+'none'[^"']*["']/i.test(tag)
+  );
+  if (!hasValidCsp) {
+    errors.push("missing <head> CSP meta directive: default-src 'none'");
   }
+
+  // Zero external URLs (allow standard XML SVG namespace only; redact query/userinfo in errors)
   const strippedSvgNs = html.replace(/http:\/\/www\.w3\.org\/2000\/svg/gi, "");
   const extUrl = strippedSvgNs.match(/https?:\/\/[^"'\s<>)]+/i);
   if (extUrl) {
-    errors.push(`forbidden external URL detected: ${extUrl[0]}`);
+    errors.push(`forbidden external URL detected: ${redactUrlForLog(extUrl[0])}`);
+  }
+  const protoRelAttr = strippedSvgNs.match(/\b(?:src|href|action)\s*=\s*["'](\/\/[^"'\s<>]+)["']/i);
+  if (protoRelAttr) {
+    errors.push(`forbidden protocol-relative URL detected: ${redactUrlForLog(protoRelAttr[1])}`);
   }
 
   // Dark-first Frame-0 locks
@@ -90,9 +112,12 @@ export function checkPanelInvariants(html, options = {}) {
     }
   }
 
-  // Zero innerHTML / outerHTML assignments
+  // Zero innerHTML / outerHTML / insertAdjacentHTML / document.write DOM sinks
   if (/\.(?:innerHTML|outerHTML)\s*=/i.test(html)) {
     errors.push("forbidden innerHTML/outerHTML assignment detected");
+  }
+  if (/\.(?:insertAdjacentHTML|write|writeln)\s*\(/i.test(html)) {
+    errors.push("forbidden HTML string injection sink detected (insertAdjacentHTML/document.write)");
   }
 
   // Zero --buncss-* declarations
@@ -115,8 +140,8 @@ export function checkPanelInvariants(html, options = {}) {
     if (!skipJsParse) {
       const jsBody = scripts[0].replace(/^<script\b[^>]*>|<\/script>$/gi, "");
       try {
-        // Parse-only validation without executing the script body.
-        new Function(jsBody);
+        // Parse-only top-level script validation without executing the script body.
+        new vm.Script(jsBody);
       } catch (err) {
         errors.push(`inline <script> syntax error: ${err.message}`);
       }
@@ -178,8 +203,17 @@ if (isMain) {
   let filePath = null;
   let maxBytes = DEFAULT_MAX_BYTES;
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === "--max-bytes" && args[i + 1]) {
-      maxBytes = Number(args[i + 1]);
+    if (args[i] === "--max-bytes") {
+      if (!args[i + 1]) {
+        console.error("Error: --max-bytes requires a positive integer value");
+        process.exit(2);
+      }
+      const parsed = Number(args[i + 1]);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        console.error(`Error: invalid --max-bytes value: ${args[i + 1]}`);
+        process.exit(2);
+      }
+      maxBytes = parsed;
       i += 1;
     } else if (!args[i].startsWith("--")) {
       filePath = args[i];

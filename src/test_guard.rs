@@ -2,7 +2,7 @@
 //!
 //! Any OS-level browser/process launcher, display/brightness/lock-screen controller,
 //! hardware writer, or billed cloud call should gate real host execution with
-//! [`ensure_not_in_test`] (or the [`guard_host_effect!`] macro when used as a crate
+//! [`ensure_not_in_test`] (or the [`crate::guard_host_effect!`] macro when used as a crate
 //! dependency) so automated test suites can never disturb the live desktop or incur cost.
 
 /// Environment variable that forces [`ensure_not_in_test`] to refuse host side effects
