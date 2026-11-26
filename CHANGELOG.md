@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/compare/v0.2.1...v0.2.2) (2026-11-26)
+
+
+### Documentation
+
+* align display branding to PanelKit ([#4](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/issues/4)) ([f35d0c9](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/commit/f35d0c93787cb912ed232bacc70b243b2b6cda56))
+
 ## [0.2.1](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/compare/v0.2.0...v0.2.1) (2026-11-26)
 
 
