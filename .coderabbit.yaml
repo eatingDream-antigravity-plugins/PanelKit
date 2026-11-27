@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  high_level_summary: true
+  poem: false
+  collapse_walkthrough: true
+  request_changes_workflow: false
+  auto_review:
+    enabled: true
+    drafts: false
+    ignore_title_keywords:
+      - "chore(main): release"
+  path_filters:
+    - "!CHANGELOG.md"
+    - "!**/package-lock.json"
+    - "!Cargo.lock"
+    - "!**/panel/dist/panel.html"
+    - "!docs/screenshots/**"
+    - "!assets/*.png"
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        - Enforce Rust 1.75 MSRV compatibility, `clippy` (`-D warnings`) cleanliness, and zero new runtime dependencies beyond `serde` and `serde_json`.
+        - Verify fail-closed state handling, zero outbound network calls, and compile-time test guards blocking live OS, display, browser, or cloud side effects.
+        - Check that MCP tool IDs stay <= 64 characters and zero local paths, tokens, or private emails appear in code or docstrings.
+    - path: "tests/**/*.rs"
+      instructions: |
+        - Verify tests use compile-time test guards and remain deterministic and offline with zero live OS, display, browser, or cloud calls.
+    - path: "panel/**/*.{ts,css}"
+      instructions: |
+        - Enforce strict erasable TypeScript, `default-src 'none'` CSP safety, no `innerHTML` or untrusted DOM injection, and strict `ev.source === window.parent` + locked `targetOrigin` bridge checks.
+        - Verify Panel Kit single-file bundle size stays <= 64 KiB, EN+ZH i18n parity holds, and accessible semantic markup is preserved.
+    - path: "scripts/**"
+      instructions: |
+        - Verify `kit-manifest.json` SHA-256 sync invariants (`scripts/sync-kit.sh --check-manifest`) and POSIX shell safety (`set -euo pipefail`, safe quoting).
