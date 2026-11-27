@@ -1,34 +1,70 @@
 #!/usr/bin/env node
-// Shared executable Panel QA Gate enforcing Editorial-Warm §0/§1/§6 and i18n parity invariants.
+// Shared Panel QA Gate enforcing Lucid Indigo theme tokens, CSP/size bounds, and i18n parity.
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
-export const DEFAULT_MAX_BYTES = 43_500;
-export const WARN_BYTES = 44_000;
-export const HARD_MAX_BYTES = 46_080;
+export const DEFAULT_MAX_BYTES = 65_536;
+export const WARN_BYTES = 57_344;
+export const HARD_MAX_BYTES = 65_536;
+
+export const DARK_BG_HEX = "#0B0D12";
+export const LIGHT_BG_HEX = "#F8FAFD";
+export const DARK_ACCENT_HEX = "#6895FF";
+export const LIGHT_ACCENT_HEX = "#2952CC";
+export const DARK_OK_HEX = "#34D399";
+export const LIGHT_OK_HEX = "#059669";
 
 const CJK_CHAR_RE = /[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/g;
 const PLACEHOLDER_RE = /\{([a-zA-Z0-9_.-]+)\}/g;
 
 export const FAMILY_TOKENS = Object.freeze([
-  "--bg", "--s1", "--s2", "--s0",
+  "--bg", "--s1", "--s2", "--s3", "--s0",
   "--t1", "--t2", "--t3",
-  "--ln", "--l2", "--sh",
-  "--ac", "--ah", "--ok", "--wn", "--er", "--in",
-]);
+  "--ln", "--l2", "--ls", "--sh",
+  "--ac", "--ah", "--as", "--ab", "--cb", "--ct",
+  "--ok", "--wn", "--er", "--in",
+] as const);
 
-function extractAllCssBlocks(css, selectorRegex) {
-  const blocks = [];
+export interface PanelGuardOptions {
+  maxBytes?: number;
+  hardMaxBytes?: number;
+  warnBytes?: number;
+  bootPlaceholder?: string | null;
+  skipJsParse?: boolean;
+}
+
+export interface PanelGuardResult {
+  ok: boolean;
+  bytes: number;
+  warnings: string[];
+  errors: string[];
+}
+
+export type I18nMap = ReadonlyMap<string, unknown> | Record<string, unknown>;
+
+export interface I18nCheckResult {
+  ok: boolean;
+  checkedKeys: number;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface EnNoCjkOptions {
+  allowKeys?: Iterable<string>;
+}
+
+function extractAllCssBlocks(css: string, selectorRegex: RegExp): string | null {
+  const blocks: string[] = [];
   for (const m of css.matchAll(selectorRegex)) {
     if (m[1]) blocks.push(m[1]);
   }
   return blocks.length > 0 ? blocks.join("\n") : null;
 }
 
-function redactUrlForLog(rawUrl) {
+function redactUrlForLog(rawUrl: string): string {
   try {
     const u = new URL(rawUrl.startsWith("//") ? `https:${rawUrl}` : rawUrl);
     return `${u.protocol}//${u.host}${u.pathname}`;
@@ -38,28 +74,30 @@ function redactUrlForLog(rawUrl) {
 }
 
 /**
- * Evaluates all Editorial-Warm panel invariants against a compiled self-contained HTML string.
+ * Evaluates all Lucid Indigo panel invariants against a compiled self-contained HTML string.
  * Returns `{ ok, bytes, warnings, errors }`.
  */
-export function checkPanelInvariants(html, options = {}) {
+export function checkPanelInvariants(
+  html: string,
+  options: PanelGuardOptions = {}
+): PanelGuardResult {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const hardMaxBytes = options.hardMaxBytes ?? HARD_MAX_BYTES;
   const warnBytes = options.warnBytes ?? WARN_BYTES;
   const bootPlaceholder = options.bootPlaceholder ?? null;
   const skipJsParse = options.skipJsParse === true;
 
-  const errors = [];
-  const warnings = [];
+  const errors: string[] = [];
+  const warnings: string[] = [];
 
   if (typeof html !== "string" || html.length === 0) {
     return { ok: false, bytes: 0, warnings, errors: ["panel HTML must be a non-empty string"] };
   }
 
   const bytes = Buffer.byteLength(html, "utf8");
-  if (bytes >= hardMaxBytes) {
-    errors.push(`hard size gate exceeded: ${bytes} B >= ${hardMaxBytes} B`);
-  }
-  if (bytes > maxBytes) {
+  if (bytes > hardMaxBytes) {
+    errors.push(`hard size gate exceeded: ${bytes} B > ${hardMaxBytes} B`);
+  } else if (bytes > maxBytes) {
     errors.push(`size budget exceeded: ${bytes} B > ${maxBytes} B`);
   }
   if (bytes > warnBytes) {
@@ -111,13 +149,13 @@ export function checkPanelInvariants(html, options = {}) {
     errors.push(`forbidden protocol-relative URL string detected: ${redactUrlForLog(protoRelQuotedHost[1])}`);
   }
 
-  // Dark-first Frame-0 locks
+  // Dark-first Frame-0 locks (Lucid Indigo #0B0D12)
   const htmlTag = htmlNoComments.match(/<html\b[^>]*>/i)?.[0] || "";
   if (
-    !/style=(["'])[\s\S]*?background\s*:\s*#141311[\s\S]*?\1/i.test(htmlTag) ||
+    !/style=(["'])[\s\S]*?background\s*:\s*#0b0d12[\s\S]*?\1/i.test(htmlTag) ||
     !/style=(["'])[\s\S]*?color-scheme\s*:\s*dark[\s\S]*?\1/i.test(htmlTag)
   ) {
-    errors.push('missing dark-first inline lock on <html> (background:#141311;color-scheme:dark)');
+    errors.push('missing dark-first inline lock on <html> (background:#0B0D12;color-scheme:dark)');
   }
   if (
     !/<meta\b[^>]*name=["']color-scheme["'][^>]*content=["']dark["'][^>]*>/i.test(htmlNoComments) &&
@@ -126,8 +164,8 @@ export function checkPanelInvariants(html, options = {}) {
     errors.push('missing dark-only <meta name="color-scheme" content="dark">');
   }
   const bodyTag = htmlNoComments.match(/<body\b[^>]*>/i)?.[0] || "";
-  if (!/style=(["'])[\s\S]*?background\s*:\s*#141311[\s\S]*?\1/i.test(bodyTag)) {
-    errors.push('missing dark-first inline lock on <body> (background:#141311)');
+  if (!/style=(["'])[\s\S]*?background\s*:\s*#0b0d12[\s\S]*?\1/i.test(bodyTag)) {
+    errors.push('missing dark-first inline lock on <body> (background:#0B0D12)');
   }
 
   // Zero prefers-color-scheme
@@ -185,12 +223,13 @@ export function checkPanelInvariants(html, options = {}) {
         // Parse-only top-level script validation without executing the script body.
         new vm.Script(jsBody);
       } catch (err) {
-        errors.push(`inline <script> syntax error: ${err.message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`inline <script> syntax error: ${message}`);
       }
     }
   }
 
-  // All 16 family tokens in BOTH dark (:root) and light (:root[data-theme="light"]) + light --ok: #2F7D53
+  // All Lucid Indigo family tokens in BOTH dark (:root) and light (:root[data-theme="light"]) + canonical anchor values
   if (styleBlocks.length === 0) {
     errors.push("missing inline <style> block");
   } else {
@@ -212,8 +251,23 @@ export function checkPanelInvariants(html, options = {}) {
         if (!tokRe.test(darkBlock)) errors.push(`missing dark family token: ${tok}`);
         if (!tokRe.test(lightBlock)) errors.push(`missing light family token: ${tok}`);
       }
-      if (!/--ok\s*:\s*#2f7d53\b/i.test(lightBlock)) {
-        errors.push("light theme --ok must be #2F7D53");
+      if (!/--bg\s*:\s*(?:var\([^,)]+,\s*)?#0b0d12\b/i.test(darkBlock)) {
+        errors.push(`dark theme --bg must be ${DARK_BG_HEX}`);
+      }
+      if (!/--ac\s*:\s*#6895ff\b/i.test(darkBlock)) {
+        errors.push(`dark theme --ac must be ${DARK_ACCENT_HEX}`);
+      }
+      if (!/--ok\s*:\s*#34d399\b/i.test(darkBlock)) {
+        errors.push(`dark theme --ok must be ${DARK_OK_HEX}`);
+      }
+      if (!/--bg\s*:\s*(?:var\([^,)]+,\s*)?#f8fafd\b/i.test(lightBlock)) {
+        errors.push(`light theme --bg must be ${LIGHT_BG_HEX}`);
+      }
+      if (!/--ac\s*:\s*#2952cc\b/i.test(lightBlock)) {
+        errors.push(`light theme --ac must be ${LIGHT_ACCENT_HEX}`);
+      }
+      if (!/--ok\s*:\s*#059669\b/i.test(lightBlock)) {
+        errors.push(`light theme --ok must be ${LIGHT_OK_HEX}`);
       }
     }
     if (!/prefers-reduced-motion\s*:\s*reduce/i.test(combinedCss)) {
@@ -227,7 +281,10 @@ export function checkPanelInvariants(html, options = {}) {
 /**
  * Throws an Error listing every failed invariant if `html` violates the Panel QA gate.
  */
-export function assertPanelInvariants(html, options = {}) {
+export function assertPanelInvariants(
+  html: string,
+  options: PanelGuardOptions = {}
+): PanelGuardResult {
   const report = checkPanelInvariants(html, options);
   if (!report.ok) {
     throw new Error(`Panel invariant gate failed (${report.bytes} B):\n- ${report.errors.join("\n- ")}`);
@@ -235,15 +292,18 @@ export function assertPanelInvariants(html, options = {}) {
   return report;
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
 
-function flattenI18nEntries(input, localeName) {
-  const entries = new Map();
-  const errors = [];
+function flattenI18nEntries(
+  input: unknown,
+  localeName: string
+): { entries: Map<string, string>; errors: string[] } {
+  const entries = new Map<string, string>();
+  const errors: string[] = [];
 
   if (!(input instanceof Map) && !isPlainObject(input)) {
     errors.push(
@@ -252,7 +312,7 @@ function flattenI18nEntries(input, localeName) {
     return { entries, errors };
   }
 
-  const walk = (node, prefix) => {
+  const walk = (node: ReadonlyMap<unknown, unknown> | Record<string, unknown>, prefix: string): void => {
     const iter = node instanceof Map ? node.entries() : Object.entries(node);
     for (const [rawKey, val] of iter) {
       const key = String(rawKey);
@@ -270,12 +330,12 @@ function flattenI18nEntries(input, localeName) {
     }
   };
 
-  walk(input, "");
+  walk(input as ReadonlyMap<unknown, unknown> | Record<string, unknown>, "");
   return { entries, errors };
 }
 
-function extractPlaceholders(str) {
-  const counts = new Map();
+function extractPlaceholders(str: string): Map<string, number> {
+  const counts = new Map<string, number>();
   for (const m of str.matchAll(PLACEHOLDER_RE)) {
     const token = `{${m[1]}}`;
     counts.set(token, (counts.get(token) || 0) + 1);
@@ -283,7 +343,7 @@ function extractPlaceholders(str) {
   return counts;
 }
 
-function formatPlaceholders(counts) {
+function formatPlaceholders(counts: ReadonlyMap<string, number>): string {
   if (counts.size === 0) return "none";
   return [...counts.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -291,7 +351,7 @@ function formatPlaceholders(counts) {
     .join(", ");
 }
 
-function placeholderCountsEqual(a, b) {
+function placeholderCountsEqual(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): boolean {
   if (a.size !== b.size) return false;
   for (const [k, v] of a) {
     if (b.get(k) !== v) return false;
@@ -299,7 +359,7 @@ function placeholderCountsEqual(a, b) {
   return true;
 }
 
-function previewText(str, maxLen = 48) {
+function previewText(str: string, maxLen = 48): string {
   const compact = str.replace(/\s+/g, " ").trim();
   return compact.length > maxLen ? `${compact.slice(0, maxLen - 3)}...` : compact;
 }
@@ -308,20 +368,20 @@ function previewText(str, maxLen = 48) {
  * Verifies 1:1 key and `{placeholder}` parity between `enMap` and `zhMap`.
  * Returns `{ ok, checkedKeys, warnings, errors }` with actionable remediation errors.
  */
-export function checkI18nParity(enMap, zhMap) {
-  const warnings = [];
+export function checkI18nParity(enMap: I18nMap, zhMap: I18nMap): I18nCheckResult {
+  const warnings: string[] = [];
   const enParsed = flattenI18nEntries(enMap, "en");
   const zhParsed = flattenI18nEntries(zhMap, "zh");
   const errors = [...enParsed.errors, ...zhParsed.errors];
 
   for (const [key, enVal] of enParsed.entries) {
-    if (!zhParsed.entries.has(key)) {
+    const zhVal = zhParsed.entries.get(key);
+    if (zhVal === undefined) {
       errors.push(
         `Missing zh translation for key "${key}" (en: "${previewText(enVal)}") — add "${key}" to your zh dictionary to restore 1:1 parity.`
       );
       continue;
     }
-    const zhVal = zhParsed.entries.get(key);
     const enEmpty = enVal.trim().length === 0;
     const zhEmpty = zhVal.trim().length === 0;
     if (enEmpty !== zhEmpty) {
@@ -355,7 +415,7 @@ export function checkI18nParity(enMap, zhMap) {
 /**
  * Throws an Error listing every i18n parity violation if `enMap` and `zhMap` diverge.
  */
-export function assertI18nParity(enMap, zhMap) {
+export function assertI18nParity(enMap: I18nMap, zhMap: I18nMap): I18nCheckResult {
   const report = checkI18nParity(enMap, zhMap);
   if (!report.ok) {
     throw new Error(`i18n parity gate failed (${report.checkedKeys} keys):\n- ${report.errors.join("\n- ")}`);
@@ -367,9 +427,11 @@ export function assertI18nParity(enMap, zhMap) {
  * Flags stray CJK characters or CJK punctuation in English UI copy (`enMap`).
  * Pass `{ allowKeys: ["langZh"] }` if specific keys intentionally render localized language labels.
  */
-export function checkEnNoCjk(enMap, options = {}) {
-  const warnings = [];
-  const allowKeys = new Set(Array.isArray(options.allowKeys) || options.allowKeys instanceof Set ? options.allowKeys : []);
+export function checkEnNoCjk(enMap: I18nMap, options: EnNoCjkOptions = {}): I18nCheckResult {
+  const warnings: string[] = [];
+  const allowKeys = new Set(
+    Array.isArray(options.allowKeys) || options.allowKeys instanceof Set ? options.allowKeys : []
+  );
   const parsed = flattenI18nEntries(enMap, "en");
   const errors = [...parsed.errors];
 
@@ -390,7 +452,7 @@ export function checkEnNoCjk(enMap, options = {}) {
 /**
  * Throws an Error if English UI copy contains unexpected CJK characters.
  */
-export function assertEnNoCjk(enMap, options = {}) {
+export function assertEnNoCjk(enMap: I18nMap, options: EnNoCjkOptions = {}): I18nCheckResult {
   const report = checkEnNoCjk(enMap, options);
   if (!report.ok) {
     throw new Error(`EN no-CJK gate failed (${report.checkedKeys} keys):\n- ${report.errors.join("\n- ")}`);
@@ -398,15 +460,15 @@ export function assertEnNoCjk(enMap, options = {}) {
   return report;
 }
 
-// CLI entrypoint: `node panel/guard.mjs <panel.html> [--max-bytes 43500]`
+// CLI entrypoint: `node panel/guard.ts <panel.html> [--max-bytes 65536]`
 const isMain =
   typeof process !== "undefined" &&
-  process.argv[1] &&
+  Boolean(process.argv[1]) &&
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (isMain) {
   const args = process.argv.slice(2);
-  let filePath = null;
+  let filePath: string | null = null;
   let maxBytes = DEFAULT_MAX_BYTES;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--max-bytes") {
@@ -433,7 +495,7 @@ if (isMain) {
     }
   }
   if (!filePath) {
-    console.error("Usage: node panel/guard.mjs <panel.html> [--max-bytes 43500]");
+    console.error("Usage: node panel/guard.ts <panel.html> [--max-bytes 65536]");
     process.exit(2);
   }
   const html = fs.readFileSync(filePath, "utf8");

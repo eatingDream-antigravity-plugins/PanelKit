@@ -31,9 +31,14 @@ jobs:
         run: cargo test --locked
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: "20"
+          node-version: "24"
+          cache: "npm"
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+      - name: Panel kit TypeScript check
+        run: npm run typecheck
       - name: Panel kit & sync tests
-        run: node --test panel/test/kit.test.mjs
+        run: npm test
       - name: Verify kit-manifest.json
         run: bash scripts/sync-kit.sh --check-manifest
 

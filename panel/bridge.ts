@@ -13,10 +13,235 @@ const BG_VAR = "--color-background-primary";
 const JSONRPC_VER = "2.0";
 const UI_NOTIF_PREFIX = "ui/notifications/";
 
-const rgbLuminance = (r, g, b) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+export type DocumentTheme = "light" | "dark";
+
+export interface AppInfo {
+  name: string;
+  version: string;
+  [key: string]: unknown;
+}
+
+export interface AppCapabilities {
+  [key: string]: unknown;
+}
+
+export interface HostCapabilities {
+  serverTools?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface HostStylesCss {
+  fonts?: string;
+  [key: string]: unknown;
+}
+
+export interface HostStyles {
+  variables?: Record<string, string | number | null | undefined>;
+  css?: HostStylesCss;
+  [key: string]: unknown;
+}
+
+export interface ContainerDimensions {
+  maxHeight?: number | null;
+  maxWidth?: number | null;
+  height?: number | null;
+  width?: number | null;
+  [key: string]: unknown;
+}
+
+export interface HostContext {
+  theme?: string;
+  styles?: HostStyles;
+  containerDimensions?: ContainerDimensions;
+  [key: string]: unknown;
+}
+
+export interface BridgeStyleTarget {
+  style?: {
+    colorScheme?: string;
+    backgroundColor?: string;
+    height?: string;
+    setProperty(name: string, value: string): void;
+  } | null;
+}
+
+export interface BridgeRootElement extends BridgeStyleTarget {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  getBoundingClientRect(): { height: number; width?: number };
+}
+
+export interface BridgeMetaElement {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+}
+
+export interface BridgeStyleElement {
+  id: string;
+  textContent: string | null;
+}
+
+export interface BridgeBodyTarget {
+  style?: {
+    backgroundColor?: string;
+  } | null;
+}
+
+export interface BridgeDocument {
+  documentElement?: BridgeRootElement | null;
+  body?: BridgeBodyTarget | null;
+  head?: {
+    appendChild(node: never): unknown;
+  } | null;
+  querySelector?(selector: string): BridgeMetaElement | null;
+  getElementById?(id: string): BridgeStyleElement | null;
+  createElement?(tagName: string): BridgeStyleElement;
+}
+
+export type BridgeDocLike = Document | BridgeDocument;
+
+export interface BridgeTargetWindow {
+  postMessage(message: unknown, targetOrigin: string): void;
+}
+
+export interface BridgeMessageEvent {
+  source?: unknown;
+  origin?: string;
+  data?: unknown;
+}
+
+export interface BridgeWindow {
+  parent?: BridgeTargetWindow | null;
+  innerWidth?: number;
+  requestAnimationFrame?: (callback: () => void) => unknown;
+  addEventListener?(type: "message", listener: (ev: BridgeMessageEvent) => void): void;
+  removeEventListener?(type: "message", listener: (ev: BridgeMessageEvent) => void): void;
+}
+
+export type BridgeWindowLike = Window | BridgeWindow;
+
+export interface ResizeObserverLike {
+  observe(target: unknown): void;
+  disconnect(): void;
+}
+
+export type ResizeObserverConstructor = new (callback: () => void) => ResizeObserverLike;
+
+export interface AppOptions {
+  window?: BridgeWindowLike | null;
+  document?: BridgeDocLike | null;
+  perfNow?: () => number;
+  autoResize?: boolean;
+  targetOrigin?: string;
+  target?: BridgeTargetWindow | null;
+  ResizeObserver?: ResizeObserverConstructor | null;
+}
+
+export interface ConnectOptions {
+  retries?: number;
+  retryDelayMs?: number;
+  timeoutMs?: number;
+}
+
+export interface RequestOptions {
+  timeoutMs?: number;
+  maxTimeoutMs?: number;
+}
+
+export interface ToolCallOptions {
+  timeout?: number;
+  maxTimeout?: number;
+}
+
+export interface ToolCallParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+  _meta?: {
+    progressToken?: string | number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface ToolCallResult {
+  structuredContent?: {
+    serverMs?: number;
+    [key: string]: unknown;
+  };
+  serverMs?: number;
+  [key: string]: unknown;
+}
+
+export interface ToolCallMetrics<T = ToolCallResult> {
+  result: T;
+  totalMs: number;
+  serverMs: number;
+  netRttMs: number;
+}
+
+export interface BridgeApp {
+  onteardown?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
+  onhostcontextchanged?: (delta: Partial<HostContext>, merged: HostContext) => unknown | Promise<unknown>;
+  ontoolinput?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
+  ontoolresult?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
+  ontoolcancelled?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
+  isConnected(): boolean;
+  hasServerTools(): boolean;
+  getHostCapabilities(): HostCapabilities | null;
+  getHostContext(): HostContext | null;
+  getLastRttMs(): number | null;
+  request<T = unknown>(method: string, params?: unknown, opts?: RequestOptions): Promise<T>;
+  notification(method: string, params?: unknown): void;
+  close(): void;
+  connect(connectOpts?: ConnectOptions): Promise<void>;
+  callServerTool<T = ToolCallResult>(params: ToolCallParams, opts?: ToolCallOptions): Promise<T>;
+  callServerToolWithMetrics<T = ToolCallResult>(
+    params: ToolCallParams,
+    opts?: ToolCallOptions
+  ): Promise<ToolCallMetrics<T>>;
+}
+
+interface ColorAlphaLum {
+  a: number;
+  lum: number | null;
+}
+
+interface PendingEntry {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+  isInit: boolean;
+  progressToken: string | number | null;
+  timer: ReturnType<typeof setTimeout>;
+  hardTimer: ReturnType<typeof setTimeout>;
+  clearTimers(): void;
+  reset(): void;
+}
+
+interface JsonRpcError {
+  code?: number;
+  message?: string;
+}
+
+interface JsonRpcMessage {
+  jsonrpc?: string;
+  id?: string | number;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: JsonRpcError;
+}
+
+interface InitializeResult {
+  protocolVersion?: string;
+  hostCapabilities?: HostCapabilities;
+  hostContext?: HostContext;
+}
+
+const rgbLuminance = (r: number, g: number, b: number): number =>
+  (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 const STRICT_NUM_RE = /^(?:\d+\.?\d*|\.\d+)$/;
 
-function parseAlpha(raw) {
+function parseAlpha(raw: unknown): number | null {
   const s = String(raw ?? "").trim();
   if (!s) return null;
   const isPct = s.endsWith("%");
@@ -26,7 +251,7 @@ function parseAlpha(raw) {
   return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : null;
 }
 
-function parseRgbChannel(raw) {
+function parseRgbChannel(raw: unknown): number | null {
   const s = String(raw ?? "").trim();
   if (!s) return null;
   const isPct = s.endsWith("%");
@@ -38,7 +263,7 @@ function parseRgbChannel(raw) {
   return Math.max(0, Math.min(255, ch));
 }
 
-function parseColorAlphaLum(raw) {
+function parseColorAlphaLum(raw: unknown): ColorAlphaLum | null {
   const s = String(raw || "").trim();
   const low = s.toLowerCase();
   if (!s || /^(transparent|none|initial|unset)$/.test(low)) return null;
@@ -47,7 +272,8 @@ function parseColorAlphaLum(raw) {
   if (m) {
     const h = m[1];
     const short = h.length <= 4;
-    const ch = (i) => parseInt(short ? h[i] + h[i] : h.slice(i * 2, i * 2 + 2), 16);
+    const ch = (i: number): number =>
+      parseInt(short ? h[i] + h[i] : h.slice(i * 2, i * 2 + 2), 16);
     const a = h.length === 4 || h.length === 8 ? ch(3) / 255 : 1;
     const lum = rgbLuminance(ch(0), ch(1), ch(2));
     return Number.isFinite(a) && Number.isFinite(lum) ? { a, lum } : null;
@@ -101,7 +327,7 @@ function parseColorAlphaLum(raw) {
  * Returns relative luminance in [0, 1] for opaque/semi-opaque colors (alpha >= 0.5),
  * or null for transparent/unparseable colors.
  */
-export function parseColorLum(raw) {
+export function parseColorLum(raw: unknown): number | null {
   const parsed = parseColorAlphaLum(raw);
   return parsed &&
     Number.isFinite(parsed.a) &&
@@ -115,25 +341,33 @@ export function parseColorLum(raw) {
 /**
  * Computes net network/bridge round-trip time in milliseconds: max(0, totalMs - serverMs).
  */
-export function measureNetRttMs(totalMs, serverMs = 0) {
+export function measureNetRttMs(totalMs: number, serverMs = 0): number {
   const total = Number.isFinite(totalMs) ? totalMs : 0;
   const srv = Number.isFinite(serverMs) ? serverMs : 0;
   return Math.max(0, Math.round(total - srv));
 }
 
-export function applyDocumentTheme(theme, doc = typeof document !== "undefined" ? document : null) {
+export function applyDocumentTheme(
+  theme: unknown,
+  doc: BridgeDocLike | null = typeof document !== "undefined" ? document : null
+): void {
   if ((theme !== "light" && theme !== "dark") || !doc?.documentElement) return;
   const el = doc.documentElement;
-  const bg = `var(${BG_VAR},${theme === "light" ? "#FAF8F4" : "#141311"})`;
+  const bg = `var(${BG_VAR},${theme === "light" ? "#F8FAFD" : "#0B0D12"})`;
   if (el.getAttribute("data-theme") !== theme) el.setAttribute("data-theme", theme);
-  el.style.colorScheme = theme;
-  el.style.backgroundColor = bg;
+  if (el.style) {
+    el.style.colorScheme = theme;
+    el.style.backgroundColor = bg;
+  }
   if (doc.body?.style) doc.body.style.backgroundColor = bg;
   const meta = doc.querySelector?.('meta[name="color-scheme"]');
   if (meta && meta.getAttribute("content") !== theme) meta.setAttribute("content", theme);
 }
 
-export function applyHostStyleVariables(vars, target = typeof document !== "undefined" ? document.documentElement : null) {
+export function applyHostStyleVariables(
+  vars: Record<string, unknown> | null | undefined,
+  target: BridgeStyleTarget | null = typeof document !== "undefined" ? document.documentElement : null
+): void {
   if (!vars || typeof vars !== "object" || !target?.style) return;
   for (const [k, v] of Object.entries(vars)) {
     if (!k.startsWith("--") || v == null) continue;
@@ -147,19 +381,25 @@ export function applyHostStyleVariables(vars, target = typeof document !== "unde
   }
 }
 
-export function applyHostFonts(css, doc = typeof document !== "undefined" ? document : null) {
+export function applyHostFonts(
+  css: string | null | undefined,
+  doc: BridgeDocLike | null = typeof document !== "undefined" ? document : null
+): void {
   if (!css || !doc?.head) return;
   const id = "__mcp-host-fonts";
-  let styleEl = doc.getElementById?.(id);
-  if (!styleEl) {
+  let styleEl = doc.getElementById?.(id) ?? null;
+  if (!styleEl && doc.createElement) {
     styleEl = doc.createElement("style");
     styleEl.id = id;
-    doc.head.appendChild(styleEl);
+    (doc.head as { appendChild(el: BridgeStyleElement): unknown }).appendChild(styleEl);
   }
-  if (styleEl.textContent !== css) styleEl.textContent = css;
+  if (styleEl && styleEl.textContent !== css) styleEl.textContent = css;
 }
 
-export function applyHostContext(ctx, doc = typeof document !== "undefined" ? document : null) {
+export function applyHostContext(
+  ctx: HostContext | null | undefined,
+  doc: BridgeDocLike | null = typeof document !== "undefined" ? document : null
+): DocumentTheme | null {
   if (!ctx || typeof ctx !== "object") return null;
   const styles = ctx.styles;
   if (styles?.variables && doc?.documentElement) {
@@ -169,7 +409,7 @@ export function applyHostContext(ctx, doc = typeof document !== "undefined" ? do
     applyHostFonts(styles.css.fonts, doc);
   }
   const rawTheme = String(ctx.theme || "").trim().toLowerCase();
-  let theme = /dark|night|black/.test(rawTheme)
+  let theme: DocumentTheme | null = /dark|night|black/.test(rawTheme)
     ? "dark"
     : /light|day|white/.test(rawTheme)
       ? "light"
@@ -178,7 +418,7 @@ export function applyHostContext(ctx, doc = typeof document !== "undefined" ? do
     const bgVar =
       styles?.variables?.[BG_VAR] ||
       (typeof getComputedStyle === "function" && doc?.documentElement
-        ? getComputedStyle(doc.documentElement).getPropertyValue(BG_VAR)
+        ? getComputedStyle(doc.documentElement as Element).getPropertyValue(BG_VAR)
         : "");
     const lum = parseColorLum(bgVar);
     if (lum !== null) theme = lum < 0.45 ? "dark" : "light";
@@ -194,10 +434,16 @@ export function applyHostContext(ctx, doc = typeof document !== "undefined" ? do
  * RPC traffic. Even when `autoResize: true` is passed, `size-changed` is only enabled
  * when the host explicitly provides `hostContext.containerDimensions.maxHeight`.
  */
-export function App(appInfo, appCapabilities = {}, options = {}) {
-  const win = options.window ?? (typeof window !== "undefined" ? window : null);
-  const doc = options.document ?? (typeof document !== "undefined" ? document : null);
-  const perfNow = options.perfNow ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
+export function App(
+  this: unknown,
+  appInfo: AppInfo,
+  appCapabilities: AppCapabilities = {},
+  options: AppOptions = {}
+): BridgeApp {
+  const win: BridgeWindowLike | null = options.window ?? (typeof window !== "undefined" ? window : null);
+  const doc: BridgeDocLike | null = options.document ?? (typeof document !== "undefined" ? document : null);
+  const perfNow: () => number =
+    options.perfNow ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
   const caps = appCapabilities || {};
   const autoResize = options.autoResize === true;
   const configuredOrigin =
@@ -205,52 +451,57 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
       ? options.targetOrigin.trim()
       : "*";
   let activeOrigin = configuredOrigin;
-  const target =
+  const target: BridgeTargetWindow | null =
     options.target !== undefined
       ? options.target
       : win && win.parent && win.parent !== win
         ? win.parent
         : null;
 
-  const pending = new Map();
-  const self = this || {};
-  let hostCaps = null;
-  let hostCtx = null;
+  const pending = new Map<string | number, PendingEntry>();
+  const self: Partial<BridgeApp> =
+    this && typeof this === "object" ? (this as Partial<BridgeApp>) : {};
+  let hostCaps: HostCapabilities | null = null;
+  let hostCtx: HostContext | null = null;
   let nextId = 1;
   let initOk = false;
   let connEpoch = 0;
-  let connPromise = null;
-  let retryTimer = null;
-  let retryCancel = null;
+  let connPromise: Promise<void> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryCancel: (() => void) | null = null;
   let listening = false;
-  let resizeObserver = null;
-  let lastRttMs = null;
+  let resizeObserver: ResizeObserverLike | null = null;
+  let lastRttMs: number | null = null;
 
-  const post = (payload) => {
+  const post = (payload: unknown): void => {
     if (!target || typeof target.postMessage !== "function") {
       throw new Error("MCP host parent window unavailable");
     }
     target.postMessage(payload, activeOrigin);
   };
 
-  const reply = (id, result, error) =>
+  const reply = (id: string | number, result: unknown, error?: JsonRpcError): void =>
     post(error ? { jsonrpc: JSONRPC_VER, id, error } : { jsonrpc: JSONRPC_VER, id, result });
 
-  const attachListener = () => {
+  const messageListener = (ev: BridgeMessageEvent): void => {
+    void onMessage(ev);
+  };
+
+  const attachListener = (): void => {
     if (!listening && win?.addEventListener) {
-      win.addEventListener("message", onMessage);
+      (win as BridgeWindow).addEventListener?.("message", messageListener);
       listening = true;
     }
   };
 
-  const detachListener = () => {
+  const detachListener = (): void => {
     if (listening && win?.removeEventListener) {
-      win.removeEventListener("message", onMessage);
+      (win as BridgeWindow).removeEventListener?.("message", messageListener);
       listening = false;
     }
   };
 
-  const cancelRetrySleep = () => {
+  const cancelRetrySleep = (): void => {
     if (retryTimer !== null) {
       clearTimeout(retryTimer);
       retryTimer = null;
@@ -262,11 +513,11 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     }
   };
 
-  const mergeHostContext = (prevCtx, delta) => {
-    const prev = prevCtx && typeof prevCtx === "object" ? prevCtx : {};
-    const patch = delta && typeof delta === "object" ? delta : {};
+  const mergeHostContext = (prevCtx: HostContext | null, delta: Partial<HostContext>): HostContext => {
+    const prev: HostContext = prevCtx && typeof prevCtx === "object" ? prevCtx : {};
+    const patch: Partial<HostContext> = delta && typeof delta === "object" ? delta : {};
     const hasStyles = prev.styles || patch.styles;
-    const mergedStyles = hasStyles
+    const mergedStyles: HostStyles | undefined = hasStyles
       ? {
           ...(prev.styles || {}),
           ...(patch.styles || {}),
@@ -295,12 +546,14 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     };
   };
 
-  async function onMessage(ev) {
+  async function onMessage(ev: BridgeMessageEvent): Promise<void> {
     // Strictly validate event source (and activeOrigin when configured/locked) against the parent host window.
     if (!target || !ev || ev.source !== target) return;
     if (activeOrigin !== "*" && ev.origin !== activeOrigin) return;
-    const msg = ev.data;
-    if (!msg || typeof msg !== "object" || msg.jsonrpc !== JSONRPC_VER) return;
+    const rawMsg = ev.data;
+    if (!rawMsg || typeof rawMsg !== "object") return;
+    const msg = rawMsg as JsonRpcMessage;
+    if (msg.jsonrpc !== JSONRPC_VER) return;
 
     const method = msg.method;
     if (msg.id !== undefined && !method) {
@@ -350,23 +603,28 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
         const key = method.slice(UI_NOTIF_PREFIX.length);
         if (key === "host-context-changed") {
           try {
-            hostCtx = mergeHostContext(hostCtx, params);
+            hostCtx = mergeHostContext(hostCtx, params as Partial<HostContext>);
             applyHostContext(hostCtx, doc);
             if (typeof self.onhostcontextchanged === "function") {
-              await self.onhostcontextchanged(params, hostCtx);
+              await self.onhostcontextchanged(params as Partial<HostContext>, hostCtx);
             }
           } catch {
             // Isolate user callback errors to prevent unhandledrejection.
           }
         } else {
-          const handlerKey = {
+          const handlerMap: Record<
+            string,
+            "ontoolinput" | "ontoolresult" | "ontoolcancelled" | undefined
+          > = {
             "tool-input": "ontoolinput",
             "tool-result": "ontoolresult",
             "tool-cancelled": "ontoolcancelled",
-          }[key];
-          if (handlerKey && typeof self[handlerKey] === "function") {
+          };
+          const handlerKey = handlerMap[key];
+          const handler = handlerKey ? self[handlerKey] : undefined;
+          if (typeof handler === "function") {
             try {
-              await self[handlerKey](params);
+              await handler(params);
             } catch {
               // Isolate user callback errors to prevent unhandledrejection.
             }
@@ -386,7 +644,11 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     }
   }
 
-  function request(method, params, opts = {}) {
+  function request<T = unknown>(
+    method: string,
+    params?: unknown,
+    opts: RequestOptions = {}
+  ): Promise<T> {
     if (!initOk && method !== "ui/initialize") {
       return Promise.reject(new Error("MCP bridge is not connected"));
     }
@@ -394,25 +656,25 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 75_000;
     const maxTimeoutMs = opts?.maxTimeoutMs;
     const id = nextId++;
-    const rawTok = params?._meta?.progressToken;
+    const rawTok = (params as { _meta?: { progressToken?: unknown } } | undefined)?._meta?.progressToken;
     const progressToken =
       typeof rawTok === "string" || (typeof rawTok === "number" && Number.isFinite(rawTok))
         ? rawTok
         : null;
     const hardCapMs =
-      Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
+      maxTimeoutMs !== undefined && Number.isFinite(maxTimeoutMs) && maxTimeoutMs > 0
         ? Math.max(timeoutMs, maxTimeoutMs)
         : Math.max(timeoutMs, timeoutMs * 4);
 
-    return new Promise((resolve, reject) => {
-      const expire = () => {
+    return new Promise<T>((resolve, reject) => {
+      const expire = (): void => {
         if (!pending.delete(id)) return;
         entry.clearTimers();
         reject(new Error(`Timeout: ${method}`));
       };
-      const startTimer = () => setTimeout(expire, timeoutMs);
-      const entry = {
-        resolve,
+      const startTimer = (): ReturnType<typeof setTimeout> => setTimeout(expire, timeoutMs);
+      const entry: PendingEntry = {
+        resolve: resolve as (value: unknown) => void,
         reject,
         isInit: method === "ui/initialize",
         progressToken,
@@ -438,11 +700,11 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     });
   }
 
-  function notification(method, params) {
+  function notification(method: string, params?: unknown): void {
     post(params !== undefined ? { jsonrpc: JSONRPC_VER, method, params } : { jsonrpc: JSONRPC_VER, method });
   }
 
-  function teardownPending(reason) {
+  function teardownPending(reason: string): void {
     for (const entry of pending.values()) {
       entry.clearTimers();
       entry.reject(new Error(reason));
@@ -450,7 +712,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     pending.clear();
   }
 
-  function resetConnectionState(reason) {
+  function resetConnectionState(reason: string): void {
     initOk = false;
     hostCaps = null;
     hostCtx = null;
@@ -461,36 +723,45 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     teardownPending(reason);
   }
 
-  function close() {
+  function close(): void {
     connEpoch += 1;
     connPromise = null;
     cancelRetrySleep();
     resetConnectionState("Closed");
   }
 
-  async function callServerToolWithMetrics(params, opts = {}) {
+  const hasServerTools = (): boolean =>
+    Boolean(hostCaps?.serverTools && typeof hostCaps.serverTools === "object");
+
+  async function callServerToolWithMetrics<T = ToolCallResult>(
+    params: ToolCallParams,
+    opts: ToolCallOptions = {}
+  ): Promise<ToolCallMetrics<T>> {
     if (!initOk) {
       throw new Error("MCP bridge is not connected");
     }
-    if (!self.hasServerTools()) {
+    if (!hasServerTools()) {
       throw new Error("MCP host does not advertise serverTools capability");
     }
     const t0 = perfNow();
-    const result = await request("tools/call", params, {
+    const result = await request<T>("tools/call", params, {
       timeoutMs: opts.timeout ?? 75_000,
       maxTimeoutMs: opts.maxTimeout,
     });
     const totalMs = Math.max(0, perfNow() - t0);
-    const rawServerMs = result?.structuredContent?.serverMs ?? result?.serverMs;
+    const typedResult = result as ToolCallResult | null | undefined;
+    const rawServerMs = typedResult?.structuredContent?.serverMs ?? typedResult?.serverMs;
     const serverMs = Number.isFinite(rawServerMs) ? Number(rawServerMs) : 0;
     const netRttMs = measureNetRttMs(totalMs, serverMs);
     lastRttMs = netRttMs;
     return { result, totalMs, serverMs, netRttMs };
   }
 
-  function startAutoResizeIfInline() {
+  function startAutoResizeIfInline(): void {
     // Side panes do not advertise containerDimensions.maxHeight; never spam size-changed there.
-    const RO = options.ResizeObserver ?? (typeof ResizeObserver !== "undefined" ? ResizeObserver : null);
+    const RO =
+      options.ResizeObserver ??
+      (typeof ResizeObserver !== "undefined" ? (ResizeObserver as unknown as ResizeObserverConstructor) : null);
     if (!autoResize || hostCtx?.containerDimensions?.maxHeight == null || !RO || !doc?.documentElement) {
       return;
     }
@@ -498,13 +769,16 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     let lastW = 0;
     let lastH = 0;
     const root = doc.documentElement;
-    const raf = win?.requestAnimationFrame ?? ((fn) => setTimeout(fn, 0));
-    const measure = () => {
+    const raf = win?.requestAnimationFrame
+      ? (fn: () => void) => win.requestAnimationFrame!(fn)
+      : (fn: () => void) => setTimeout(fn, 0);
+    const measure = (): void => {
       if (queued) return;
       queued = true;
       raf(() => {
         queued = false;
-        const prev = root.style.height;
+        if (!root.style) return;
+        const prev = root.style.height ?? "";
         root.style.height = "max-content";
         const h = Math.ceil(root.getBoundingClientRect().height);
         const w = Math.ceil(win?.innerWidth || 0);
@@ -522,7 +796,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     if (doc.body) resizeObserver.observe(doc.body);
   }
 
-  function connect(connectOpts = {}) {
+  function connect(connectOpts: ConnectOptions = {}): Promise<void> {
     if (initOk) return Promise.resolve();
     if (connPromise) return connPromise;
 
@@ -535,14 +809,14 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 20_000;
 
     const p = (async () => {
-      let lastErr = null;
+      let lastErr: unknown = null;
       for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
         if (myEpoch !== connEpoch) {
           throw new Error("Closed");
         }
         attachListener();
         try {
-          const res = await request(
+          const res = await request<InitializeResult>(
             "ui/initialize",
             { appInfo, appCapabilities: caps, protocolVersion: LATEST_PROTOCOL_VERSION },
             { timeoutMs }
@@ -567,7 +841,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
           }
           resetConnectionState("Handshake retry");
           if (attempt < maxRetries) {
-            await new Promise((resolve, reject) => {
+            await new Promise<void>((resolve, reject) => {
               retryCancel = () => reject(new Error("Closed"));
               retryTimer = setTimeout(() => {
                 retryTimer = null;
@@ -594,7 +868,7 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
 
   return Object.assign(self, {
     isConnected: () => initOk,
-    hasServerTools: () => Boolean(hostCaps?.serverTools && typeof hostCaps.serverTools === "object"),
+    hasServerTools,
     getHostCapabilities: () => hostCaps,
     getHostContext: () => hostCtx,
     getLastRttMs: () => lastRttMs,
@@ -602,7 +876,8 @@ export function App(appInfo, appCapabilities = {}, options = {}) {
     notification,
     close,
     connect,
-    callServerTool: (params, opts = {}) => callServerToolWithMetrics(params, opts).then((r) => r.result),
+    callServerTool: <T = ToolCallResult>(params: ToolCallParams, opts: ToolCallOptions = {}) =>
+      callServerToolWithMetrics<T>(params, opts).then((r) => r.result),
     callServerToolWithMetrics,
   });
 }

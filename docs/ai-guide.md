@@ -1,8 +1,8 @@
 # Panel Kit (`agy-mcp-kit`) — AI Agent Guide & API Reference
 
-**Panel Kit** ([`eatingDream-antigravity-plugins/panel-kit`](https://github.com/eatingDream-antigravity-plugins/panel-kit), crate `agy-mcp-kit`, <https://eatingdream.dev>) follows the **A+B Hybrid** model:
-- **B (Canonical Source)**: All runtime primitives and panel standards live and are tested here (`cargo test --locked`, `node --test panel/test/kit.test.mjs`).
-- **A (Zero-External-Dep Standalone Sync)**: Downstream plugins — [Context Radar](https://github.com/eatingDream-antigravity-plugins/context-radar), [Clam Guard](https://github.com/eatingDream-antigravity-plugins/clam-guard), [Remote Cast](https://github.com/eatingDream-antigravity-plugins/remote-cast), and [Colab Deck](https://github.com/eatingDream-antigravity-plugins/colab-deck) — vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA256 hashes in `.agy-kit-sync.json` and `kit-manifest.json`.
+**Panel Kit** ([`eatingDream-antigravity-plugins/panel-kit`](https://github.com/eatingDream-antigravity-plugins/panel-kit), crate `agy-mcp-kit`, <https://eatingdream.dev>) uses a **canonical source + standalone vendored sync** workflow:
+- **Canonical Source**: All runtime primitives and Lucid Indigo panel standards live and are tested here (`cargo test --locked`, `npm run typecheck && npm test` running `node --test panel/test/kit.test.ts`).
+- **Standalone Sync**: Downstream plugins — [Context Radar](https://github.com/eatingDream-antigravity-plugins/context-radar), [Clam Guard](https://github.com/eatingDream-antigravity-plugins/clam-guard), [Remote Cast](https://github.com/eatingDream-antigravity-plugins/remote-cast), and [Colab Deck](https://github.com/eatingDream-antigravity-plugins/colab-deck) — vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA-256 digests in `.agy-kit-sync.json` and `kit-manifest.json`.
 
 ---
 
@@ -68,12 +68,13 @@ Only depends on `serde` and `serde_json`. Every module is self-contained so it c
 ## 2. Canonical Panel Kit (`panel/`)
 
 ### `panel/tokens.css`
-Defines all 16 Editorial-Warm two-letter tokens (`--bg`, `--s1`, `--s2`, `--s0`, `--t1`, `--t2`, `--t3`, `--ln`, `--l2`, `--sh`, `--ac`, `--ah`, `--ok`, `--wn`, `--er`, `--in`) plus `--tk`, `--sf`, `--sn`, `--mn`:
-- Dark default `:root`: `#141311` background, `--ok: #4E9F72`.
-- Light `:root[data-theme="light"]`: `#FAF8F4` background, `--ok: #2F7D53`.
+Single Source of Truth stylesheet defining all 22 **Lucid Indigo** two-letter tokens (`--bg`, `--s1`, `--s2`, `--s3`, `--s0`, `--t1`, `--t2`, `--t3`, `--ln`, `--l2`, `--ls`, `--sh`, `--ac`, `--ah`, `--as`, `--ab`, `--cb`, `--ct`, `--ok`, `--wn`, `--er`, `--in`) plus `--tk`, `--sn`, `--sf`, `--mn`:
+- Dark default `:root`: `#0B0D12` canvas, `#12151E` surface, `#181C28` well, `#1D2231` hover, `#F2F4F8` ink, Precision Cobalt `--ac: #6895FF` (`--ah: #82A8FF`), high-contrast CTA `--cb: #F2F4F8` / `--ct: #0B0D12`, status `--ok: #34D399`, `--wn: #FBBF24`, `--er: #F87171`.
+- Light `:root[data-theme="light"]`: `#F8FAFD` canvas, `#FFFFFF` surface, `#EEF2F8` well, `#E4EAF4` hover, `#0F1420` ink, Swiss Cobalt `--ac: #2952CC` (`--ah: #1F42AA`), high-contrast CTA `--cb: #0F1420` / `--ct: #FFFFFF`, status `--ok: #059669`, `--wn: #B45309`, `--er: #DC2626`.
 - Includes `@media (prefers-reduced-motion: reduce)` and `:lang(zh-CN)` label reset; zero `prefers-color-scheme`, zero `opacity: 0` keyframes.
+- **How plugins consume it**: Sync via `./scripts/sync-kit.sh --panel <plugin-repo>` into `panel/kit/tokens.css`, then prepend `panel/kit/tokens.css` ahead of plugin-local `styles.css`/`theme.css` inside `pack.ts`/`build.ts` and remove duplicate `:root` token blocks from the plugin CSS.
 
-### `panel/bridge.js`
+### `panel/bridge.ts`
 - `LATEST_PROTOCOL_VERSION = "2026-01-26"`
 - `App(appInfo, appCapabilities, options)`:
   - Strict PostMessage check: drops any event where `!target || ev.source !== target` (`target = window.parent` when `window.parent !== window`).
@@ -82,13 +83,13 @@ Defines all 16 Editorial-Warm two-letter tokens (`--bg`, `--s1`, `--s2`, `--s0`,
   - `request(method, params, { timeoutMs, maxTimeoutMs })`: rejects immediately before `connect()` or after `close()` (except `ui/initialize`), validates finite `timeoutMs`, and scopes `notifications/progress` timer resets to matching `progressToken`.
   - `hasServerTools()`: checks `hostCapabilities.serverTools`.
   - `callServerTool(params, opts)` & `callServerToolWithMetrics(params, opts)` -> `{ result, totalMs, serverMs, netRttMs }`, plus `getLastRttMs()` and `measureNetRttMs(totalMs, serverMs)`.
-  - `onhostcontextchanged(delta, merged)`: invoked after deep-merging `hostCtx.styles.{variables,css}` and applying live theme/luminance (`applyHostContext`, `applyHostStyleVariables` with strict fail-closed `>= 0.9` alpha guard on `--color-background-primary`).
+  - `onhostcontextchanged(delta, merged)`: invoked after deep-merging `hostCtx.styles.{variables,css}` and applying live theme/luminance (`applyHostContext`, `applyHostStyleVariables` with strict fail-closed `>= 0.9` alpha guard on `--color-background-primary`; dark `#0B0D12` / light `#F8FAFD` fallbacks).
   - `autoResize` defaults to `false` and only sends `ui/notifications/size-changed` when `autoResize: true` AND `hostContext.containerDimensions.maxHeight != null` (zero spam in side panes).
 
-### `panel/guard.mjs`
-- ESM API: `assertPanelInvariants(html, { maxBytes = 43500, hardMaxBytes = 46080, warnBytes = 44000, bootPlaceholder = null, skipJsParse = false })`, `checkPanelInvariants(html, opts)`, `checkI18nParity(enMap, zhMap)`, `assertI18nParity(enMap, zhMap)`, `checkEnNoCjk(enMap, { allowKeys })`, and `assertEnNoCjk(enMap, { allowKeys })`.
-- CLI: `node panel/guard.mjs <path/to/panel.html> [--max-bytes 43500]` (fails closed with exit code `2` on unknown `--*` flags).
-- Enforces: byte budget, single inline `<script>` (syntax-checked), HTML comment stripping before tag checks, strict directive-bounded `<head>` CSP `default-src 'none'`, 0 external URLs (`http(s)://`, `ws(s)://`, protocol-relative `//` in HTML/CSS/JS), dark-first `<html>`/`<meta>`/`<body>` locks, 0 `prefers-color-scheme`, 0 `opacity:0`/`0%`/`!important` in `@keyframes`/`@-webkit-keyframes`, 0 `innerHTML`/`outerHTML` (`=`/`+=`/bracket) or `insertAdjacentHTML`/`document.write`/`createContextualFragment`/`parseFromString`, 0 `--buncss-*`, all 16 tokens in both themes across concatenated comment-stripped `<style>` blocks + light `--ok: #2F7D53`, `prefers-reduced-motion: reduce`, 1:1 EN/ZH translation key & `{placeholder}` parity, and zero stray CJK characters in EN copy.
+### `panel/guard.ts`
+- ESM API: `assertPanelInvariants(html, { maxBytes = 65536, hardMaxBytes = 65536, warnBytes = 57344, bootPlaceholder = null, skipJsParse = false })`, `checkPanelInvariants(html, opts)`, `checkI18nParity(enMap, zhMap)`, `assertI18nParity(enMap, zhMap)`, `checkEnNoCjk(enMap, { allowKeys })`, and `assertEnNoCjk(enMap, { allowKeys })`.
+- CLI: `node panel/guard.ts <path/to/panel.html> [--max-bytes 65536]` (fails closed with exit code `2` on unknown `--*` flags).
+- Enforces: byte budget (`64 KiB` / `65,536` B hard, `56 KiB` / `57,344` B warn), single inline `<script>` (syntax-checked), HTML comment stripping before tag checks, strict directive-bounded `<head>` CSP `default-src 'none'`, 0 external URLs (`http(s)://`, `ws(s)://`, protocol-relative `//` in HTML/CSS/JS), dark-first `<html>`/`<meta>`/`<body>` `#0B0D12` locks, 0 `prefers-color-scheme`, 0 `opacity:0`/`0%`/`!important` in `@keyframes`/`@-webkit-keyframes`, 0 `innerHTML`/`outerHTML` (`=`/`+=`/bracket) or `insertAdjacentHTML`/`document.write`/`createContextualFragment`/`parseFromString`, 0 `--buncss-*`, all 22 Lucid Indigo tokens in both themes across concatenated comment-stripped `<style>` blocks + canonical dark (`--bg: #0B0D12`, `--ac: #6895FF`, `--ok: #34D399`) and light (`--bg: #F8FAFD`, `--ac: #2952CC`, `--ok: #059669`) values, `prefers-reduced-motion: reduce`, 1:1 EN/ZH translation key & `{placeholder}` parity, and zero stray CJK characters in EN copy.
 
 ---
 
@@ -101,25 +102,28 @@ Defines all 16 Editorial-Warm two-letter tokens (`--bg`, `--s1`, `--s2`, `--s0`,
 # Verify kit-manifest.json matches disk (runs in CI)
 ./scripts/sync-kit.sh --check-manifest
 
+# Sync unified Lucid Indigo panel kit (tokens.css, bridge.ts, guard.ts) into all 4 plugins at once
+./scripts/sync-kit.sh --panel ../context-radar ../clam-guard ../remote-cast ../colab-deck
+
 # Sync all canonical kit files into a target repo
 ./scripts/sync-kit.sh /path/to/plugin-repo
 
 # Sync a selective subset with custom destination mapping
 ./scripts/sync-kit.sh \
-  --files src/mcp_protocol.rs,panel/bridge.js,panel/guard.mjs \
-  --map panel/bridge.js=panel/bridge.js \
+  --files src/mcp_protocol.rs,panel/tokens.css,panel/bridge.ts,panel/guard.ts \
+  --map panel/bridge.ts=panel/bridge.ts \
   /path/to/plugin-repo
 
 # Re-sync using the target repo's existing .agy-kit-sync.json file mapping
 ./scripts/sync-kit.sh /path/to/plugin-repo
 
-# Verify zero drift in CI or pre-push
-./scripts/sync-kit.sh --check /path/to/plugin-repo
+# Verify zero drift across one or more plugins in CI or pre-push
+./scripts/sync-kit.sh --check ../context-radar ../clam-guard ../remote-cast ../colab-deck
 ```
 
 Default destination map:
 - `src/*.rs` -> `src/kit/*.rs`
-- `panel/{tokens.css,bridge.js,guard.mjs}` -> `panel/kit/{tokens.css,bridge.js,guard.mjs}`
+- `panel/{tokens.css,bridge.ts,guard.ts}` -> `panel/kit/{tokens.css,bridge.ts,guard.ts}`
 - `scripts/check_sanitized.sh` -> `scripts/check_sanitized.sh`
 - `.github/sanitize-patterns.txt` -> `.github/sanitize-patterns.txt`
 - `LICENSE` -> `THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE`

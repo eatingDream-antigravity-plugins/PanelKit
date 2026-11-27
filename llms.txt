@@ -1,6 +1,6 @@
 # Panel Kit (`agy-mcp-kit`)
 
-> Shared Rust MCP runtime primitives, dark-first panel kit, browserless i18n/UI structural guards, and SHA-256 vendor sync for the eatingDream Antigravity Plugin Suite (Context Radar, Clam Guard, Remote Cast, Colab Deck). Homepage: https://eatingdream.dev · Repo: https://github.com/eatingDream-antigravity-plugins/panel-kit
+> Shared Rust MCP runtime primitives, unified Lucid Indigo dark-first panel kit, browserless i18n/UI structural guards, and SHA-256 vendor sync for the eatingDream Antigravity Plugin Suite (Context Radar, Clam Guard, Remote Cast, Colab Deck). Homepage: https://eatingdream.dev · Repo: https://github.com/eatingDream-antigravity-plugins/panel-kit
 
 ## Key Files
 - [README.md](README.md): Outcome-first project overview and quick start
@@ -14,10 +14,10 @@
 - [src/test_guard.rs](src/test_guard.rs): Compile-time `#[cfg(test)]` refusal helper (`ensure_not_in_test`, `guard_host_effect!`)
 
 ## Panel Kit (`panel/`)
-- [panel/tokens.css](panel/tokens.css): 16 canonical two-letter tokens (dark `#141311`, light `#FAF8F4` + `--ok: #2F7D53`), reduced-motion
-- [panel/bridge.js](panel/bridge.js): Strict `ev.source === parent` PostMessage bridge (`2026-01-26`), `serverTools`, live theme sync, net RTT
-- [panel/guard.mjs](panel/guard.mjs): Shared Panel QA & i18n gate (`assertPanelInvariants`, `checkI18nParity`, `checkEnNoCjk`, CLI + ESM)
+- [panel/tokens.css](panel/tokens.css): 22 canonical Lucid Indigo two-letter tokens (dark `#0B0D12` / Cobalt `#6895FF` / ok `#34D399`, light `#F8FAFD` / Cobalt `#2952CC` / ok `#059669`), reduced-motion
+- [panel/bridge.ts](panel/bridge.ts): Strict `ev.source === parent` PostMessage bridge (`2026-01-26`), `serverTools`, live theme sync (`#0B0D12` / `#F8FAFD`), net RTT
+- [panel/guard.ts](panel/guard.ts): Shared Panel QA & i18n gate (`assertPanelInvariants`, `checkI18nParity`, `checkEnNoCjk`, 64 KiB / 65,536 B hard, 56 KiB / 57,344 B warn, CLI + ESM)
 
 ## Sync & Hygiene Scripts
-- [scripts/sync-kit.sh](scripts/sync-kit.sh): Vendor canonical files into target repos (`--files`, `--map`, `--check`, `--update-manifest`, `--check-manifest`)
+- [scripts/sync-kit.sh](scripts/sync-kit.sh): Vendor canonical files into one or more target repos (`--panel`, `--files`, `--map`, `--check`, `--update-manifest`, `--check-manifest`)
 - [scripts/check_sanitized.sh](scripts/check_sanitized.sh): Fail-closed, redacted sanitization guard
