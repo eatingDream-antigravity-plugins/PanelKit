@@ -1,8 +1,8 @@
-# PanelKit (agy-mcp-kit) — AI Agent Guide & API Reference
+# Panel Kit (`agy-mcp-kit`) — AI Agent Guide & API Reference
 
-**PanelKit** (`agy-mcp-kit`, <https://eatingdream.dev>) follows the **A+B Hybrid** model:
+**Panel Kit** ([`eatingDream-antigravity-plugins/panel-kit`](https://github.com/eatingDream-antigravity-plugins/panel-kit), crate `agy-mcp-kit`, <https://eatingdream.dev>) follows the **A+B Hybrid** model:
 - **B (Canonical Source)**: All runtime primitives and panel standards live and are tested here (`cargo test --locked`, `node --test panel/test/kit.test.mjs`).
-- **A (Zero-External-Dep Standalone Sync)**: Downstream plugins — ContextRadar (`context-radar-mcp`), ClamGuard (`mac-clamshell-mcp`), RemoteCast (`chrome-stream-mcp`), and ColabDeck (`colab-mcp`) — vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA256 hashes in `.agy-kit-sync.json` and `kit-manifest.json`.
+- **A (Zero-External-Dep Standalone Sync)**: Downstream plugins — [Context Radar](https://github.com/eatingDream-antigravity-plugins/context-radar), [Clam Guard](https://github.com/eatingDream-antigravity-plugins/clam-guard), [Remote Cast](https://github.com/eatingDream-antigravity-plugins/remote-cast), and [Colab Deck](https://github.com/eatingDream-antigravity-plugins/colab-deck) — vendor only the files they need via `scripts/sync-kit.sh`, verified by SHA256 hashes in `.agy-kit-sync.json` and `kit-manifest.json`.
 
 ---
 
@@ -86,9 +86,9 @@ Defines all 16 Editorial-Warm two-letter tokens (`--bg`, `--s1`, `--s2`, `--s0`,
   - `autoResize` defaults to `false` and only sends `ui/notifications/size-changed` when `autoResize: true` AND `hostContext.containerDimensions.maxHeight != null` (zero spam in side panes).
 
 ### `panel/guard.mjs`
-- ESM API: `assertPanelInvariants(html, { maxBytes = 43500, hardMaxBytes = 46080, warnBytes = 44000, bootPlaceholder = null, skipJsParse = false })` and `checkPanelInvariants(html, opts)`.
+- ESM API: `assertPanelInvariants(html, { maxBytes = 43500, hardMaxBytes = 46080, warnBytes = 44000, bootPlaceholder = null, skipJsParse = false })`, `checkPanelInvariants(html, opts)`, `checkI18nParity(enMap, zhMap)`, `assertI18nParity(enMap, zhMap)`, `checkEnNoCjk(enMap, { allowKeys })`, and `assertEnNoCjk(enMap, { allowKeys })`.
 - CLI: `node panel/guard.mjs <path/to/panel.html> [--max-bytes 43500]` (fails closed with exit code `2` on unknown `--*` flags).
-- Enforces: byte budget, single inline `<script>` (syntax-checked), HTML comment stripping before tag checks, strict directive-bounded `<head>` CSP `default-src 'none'`, 0 external URLs (`http(s)://`, `ws(s)://`, protocol-relative `//` in HTML/CSS/JS), dark-first `<html>`/`<meta>`/`<body>` locks, 0 `prefers-color-scheme`, 0 `opacity:0`/`0%`/`!important` in `@keyframes`/`@-webkit-keyframes`, 0 `innerHTML`/`outerHTML` (`=`/`+=`/bracket) or `insertAdjacentHTML`/`document.write`/`createContextualFragment`/`parseFromString`, 0 `--buncss-*`, all 16 tokens in both themes across concatenated comment-stripped `<style>` blocks + light `--ok: #2F7D53`, and `prefers-reduced-motion: reduce`.
+- Enforces: byte budget, single inline `<script>` (syntax-checked), HTML comment stripping before tag checks, strict directive-bounded `<head>` CSP `default-src 'none'`, 0 external URLs (`http(s)://`, `ws(s)://`, protocol-relative `//` in HTML/CSS/JS), dark-first `<html>`/`<meta>`/`<body>` locks, 0 `prefers-color-scheme`, 0 `opacity:0`/`0%`/`!important` in `@keyframes`/`@-webkit-keyframes`, 0 `innerHTML`/`outerHTML` (`=`/`+=`/bracket) or `insertAdjacentHTML`/`document.write`/`createContextualFragment`/`parseFromString`, 0 `--buncss-*`, all 16 tokens in both themes across concatenated comment-stripped `<style>` blocks + light `--ok: #2F7D53`, `prefers-reduced-motion: reduce`, 1:1 EN/ZH translation key & `{placeholder}` parity, and zero stray CJK characters in EN copy.
 
 ---
 

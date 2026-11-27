@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Shared executable Panel QA Gate enforcing Opus 5.5 Editorial-Warm §0/§1/§6 invariants.
+// Shared executable Panel QA Gate enforcing Editorial-Warm §0/§1/§6 and i18n parity invariants.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -9,6 +9,9 @@ import vm from "node:vm";
 export const DEFAULT_MAX_BYTES = 43_500;
 export const WARN_BYTES = 44_000;
 export const HARD_MAX_BYTES = 46_080;
+
+const CJK_CHAR_RE = /[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/g;
+const PLACEHOLDER_RE = /\{([a-zA-Z0-9_.-]+)\}/g;
 
 export const FAMILY_TOKENS = Object.freeze([
   "--bg", "--s1", "--s2", "--s0",
@@ -228,6 +231,169 @@ export function assertPanelInvariants(html, options = {}) {
   const report = checkPanelInvariants(html, options);
   if (!report.ok) {
     throw new Error(`Panel invariant gate failed (${report.bytes} B):\n- ${report.errors.join("\n- ")}`);
+  }
+  return report;
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function flattenI18nEntries(input, localeName) {
+  const entries = new Map();
+  const errors = [];
+
+  if (!(input instanceof Map) && !isPlainObject(input)) {
+    errors.push(
+      `Invalid ${localeName} translation map: expected a plain { key: string } object or Map (e.g., I18N.${localeName}).`
+    );
+    return { entries, errors };
+  }
+
+  const walk = (node, prefix) => {
+    const iter = node instanceof Map ? node.entries() : Object.entries(node);
+    for (const [rawKey, val] of iter) {
+      const key = String(rawKey);
+      const fullKey = prefix ? `${prefix}.${key}` : key;
+      if (typeof val === "string") {
+        entries.set(fullKey, val);
+      } else if (val instanceof Map || isPlainObject(val)) {
+        walk(val, fullKey);
+      } else {
+        const kind = val === null ? "null" : Array.isArray(val) ? "array" : typeof val;
+        errors.push(
+          `Invalid ${localeName} value at "${fullKey}": expected string (got ${kind}) — replace with a string or nested object.`
+        );
+      }
+    }
+  };
+
+  walk(input, "");
+  return { entries, errors };
+}
+
+function extractPlaceholders(str) {
+  const counts = new Map();
+  for (const m of str.matchAll(PLACEHOLDER_RE)) {
+    const token = `{${m[1]}}`;
+    counts.set(token, (counts.get(token) || 0) + 1);
+  }
+  return counts;
+}
+
+function formatPlaceholders(counts) {
+  if (counts.size === 0) return "none";
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tok, n]) => (n > 1 ? `${tok} x${n}` : tok))
+    .join(", ");
+}
+
+function placeholderCountsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) {
+    if (b.get(k) !== v) return false;
+  }
+  return true;
+}
+
+function previewText(str, maxLen = 48) {
+  const compact = str.replace(/\s+/g, " ").trim();
+  return compact.length > maxLen ? `${compact.slice(0, maxLen - 3)}...` : compact;
+}
+
+/**
+ * Verifies 1:1 key and `{placeholder}` parity between `enMap` and `zhMap`.
+ * Returns `{ ok, checkedKeys, warnings, errors }` with actionable remediation errors.
+ */
+export function checkI18nParity(enMap, zhMap) {
+  const warnings = [];
+  const enParsed = flattenI18nEntries(enMap, "en");
+  const zhParsed = flattenI18nEntries(zhMap, "zh");
+  const errors = [...enParsed.errors, ...zhParsed.errors];
+
+  for (const [key, enVal] of enParsed.entries) {
+    if (!zhParsed.entries.has(key)) {
+      errors.push(
+        `Missing zh translation for key "${key}" (en: "${previewText(enVal)}") — add "${key}" to your zh dictionary to restore 1:1 parity.`
+      );
+      continue;
+    }
+    const zhVal = zhParsed.entries.get(key);
+    const enEmpty = enVal.trim().length === 0;
+    const zhEmpty = zhVal.trim().length === 0;
+    if (enEmpty !== zhEmpty) {
+      const emptyLocale = zhEmpty ? "zh" : "en";
+      const nonEmptyVal = zhEmpty ? enVal : zhVal;
+      errors.push(
+        `Empty ${emptyLocale} translation for key "${key}" (other locale: "${previewText(nonEmptyVal)}") — provide translated copy instead of an empty string.`
+      );
+      continue;
+    }
+    const enPh = extractPlaceholders(enVal);
+    const zhPh = extractPlaceholders(zhVal);
+    if (!placeholderCountsEqual(enPh, zhPh)) {
+      errors.push(
+        `Placeholder mismatch for i18n key "${key}": en uses [${formatPlaceholders(enPh)}] but zh uses [${formatPlaceholders(zhPh)}] — keep identical {placeholder} tokens in both locales.`
+      );
+    }
+  }
+
+  for (const key of zhParsed.entries.keys()) {
+    if (!enParsed.entries.has(key)) {
+      errors.push(
+        `Extra zh translation key "${key}" missing from en — add "${key}" to your en dictionary or remove the stale zh key.`
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, checkedKeys: enParsed.entries.size, warnings, errors };
+}
+
+/**
+ * Throws an Error listing every i18n parity violation if `enMap` and `zhMap` diverge.
+ */
+export function assertI18nParity(enMap, zhMap) {
+  const report = checkI18nParity(enMap, zhMap);
+  if (!report.ok) {
+    throw new Error(`i18n parity gate failed (${report.checkedKeys} keys):\n- ${report.errors.join("\n- ")}`);
+  }
+  return report;
+}
+
+/**
+ * Flags stray CJK characters or CJK punctuation in English UI copy (`enMap`).
+ * Pass `{ allowKeys: ["langZh"] }` if specific keys intentionally render localized language labels.
+ */
+export function checkEnNoCjk(enMap, options = {}) {
+  const warnings = [];
+  const allowKeys = new Set(Array.isArray(options.allowKeys) || options.allowKeys instanceof Set ? options.allowKeys : []);
+  const parsed = flattenI18nEntries(enMap, "en");
+  const errors = [...parsed.errors];
+
+  for (const [key, val] of parsed.entries) {
+    if (allowKeys.has(key)) continue;
+    const matches = val.match(CJK_CHAR_RE);
+    if (matches && matches.length > 0) {
+      const uniqueChars = [...new Set(matches)].slice(0, 6).join("");
+      errors.push(
+        `Stray CJK character(s) [${uniqueChars}] in EN copy for key "${key}": "${previewText(val)}" — replace with English copy (or pass "${key}" in options.allowKeys if intentionally localized).`
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, checkedKeys: parsed.entries.size, warnings, errors };
+}
+
+/**
+ * Throws an Error if English UI copy contains unexpected CJK characters.
+ */
+export function assertEnNoCjk(enMap, options = {}) {
+  const report = checkEnNoCjk(enMap, options);
+  if (!report.ok) {
+    throw new Error(`EN no-CJK gate failed (${report.checkedKeys} keys):\n- ${report.errors.join("\n- ")}`);
   }
   return report;
 }
