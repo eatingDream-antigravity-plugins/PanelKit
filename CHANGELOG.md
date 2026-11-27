@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/eatingDream-antigravity-plugins/panel-kit/compare/v0.2.2...v0.3.0) (2026-11-27)
+
+
+### Features
+
+* add i18n parity/no-CJK guards, kebab-case URLs, main-safe CI concurrency, and outcome-first docs ([#9](https://github.com/eatingDream-antigravity-plugins/panel-kit/issues/9)) ([e5189d5](https://github.com/eatingDream-antigravity-plugins/panel-kit/commit/e5189d51397abbe7a25abf8fbdfc5f13ac2cc9e3))
+
+
+### Documentation
+
+* add release badge, releases nav link, and align contributing title ([#7](https://github.com/eatingDream-antigravity-plugins/panel-kit/issues/7)) ([d7ffb1d](https://github.com/eatingDream-antigravity-plugins/panel-kit/commit/d7ffb1ddb9311ab5b99781ae580a9839577a61f6))
+
 ## [0.2.2](https://github.com/eatingDream-antigravity-plugins/agy-mcp-kit/compare/v0.2.1...v0.2.2) (2026-11-26)
 
 
