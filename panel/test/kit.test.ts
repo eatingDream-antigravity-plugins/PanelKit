@@ -13,72 +13,121 @@ import {
   applyHostStyleVariables,
   measureNetRttMs,
   parseColorLum,
-} from "../bridge.js";
+} from "../bridge.ts";
+import type {
+  BridgeDocLike,
+  BridgeMessageEvent,
+  BridgeStyleElement,
+  BridgeStyleTarget,
+  BridgeTargetWindow,
+  BridgeWindow,
+} from "../bridge.ts";
 import {
+  DARK_ACCENT_HEX,
+  DARK_BG_HEX,
+  DARK_OK_HEX,
   DEFAULT_MAX_BYTES,
   FAMILY_TOKENS,
+  HARD_MAX_BYTES,
+  LIGHT_ACCENT_HEX,
+  LIGHT_BG_HEX,
+  LIGHT_OK_HEX,
+  WARN_BYTES,
   assertEnNoCjk,
   assertI18nParity,
   assertPanelInvariants,
   checkEnNoCjk,
   checkI18nParity,
   checkPanelInvariants,
-} from "../guard.mjs";
+} from "../guard.ts";
+import type { I18nMap, PanelGuardOptions } from "../guard.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
 const TOKENS_CSS = fs.readFileSync(path.join(REPO_ROOT, "panel", "tokens.css"), "utf8");
 
-function makeFakeEnv() {
-  const winListeners = new Map();
-  const attrs = new Map();
-  const styleProps = new Map();
-  const metaAttrs = new Map([["content", "dark"]]);
-  const sentToParent = [];
+interface SentMessage {
+  msg: Record<string, unknown>;
+  origin: string;
+}
 
-  const doc = {
+interface FakeWin extends BridgeWindow {
+  emit(type: string, ev: BridgeMessageEvent): void;
+}
+
+function makeFakeEnv(): {
+  win: FakeWin;
+  doc: BridgeDocLike;
+  parent: BridgeTargetWindow;
+  sentToParent: SentMessage[];
+  attrs: Map<string, string>;
+  styleProps: Map<string, string>;
+  metaAttrs: Map<string, string>;
+} {
+  const winListeners = new Map<string, Array<(ev: BridgeMessageEvent) => void>>();
+  const attrs = new Map<string, string>();
+  const styleProps = new Map<string, string>();
+  const metaAttrs = new Map<string, string>([["content", "dark"]]);
+  const sentToParent: SentMessage[] = [];
+  const headChildren: BridgeStyleElement[] = [];
+
+  const doc: BridgeDocLike = {
     documentElement: {
       style: {
         colorScheme: "dark",
-        backgroundColor: "#141311",
+        backgroundColor: "#0B0D12",
         height: "",
-        setProperty: (k, v) => styleProps.set(k, v),
+        setProperty: (k: string, v: string) => {
+          styleProps.set(k, v);
+        },
       },
-      getAttribute: (k) => attrs.get(k) ?? null,
-      setAttribute: (k, v) => attrs.set(k, String(v)),
+      getAttribute: (k: string) => attrs.get(k) ?? null,
+      setAttribute: (k: string, v: string) => {
+        attrs.set(k, String(v));
+      },
       getBoundingClientRect: () => ({ width: 380, height: 420 }),
     },
-    body: { style: { backgroundColor: "#141311" } },
-    head: { children: [], appendChild(el) { this.children.push(el); } },
-    querySelector: (sel) =>
+    body: { style: { backgroundColor: "#0B0D12" } },
+    head: {
+      appendChild(el: never) {
+        headChildren.push(el);
+      },
+    },
+    querySelector: (sel: string) =>
       sel.includes('meta[name="color-scheme"]')
         ? {
-            getAttribute: (k) => metaAttrs.get(k) ?? null,
-            setAttribute: (k, v) => metaAttrs.set(k, String(v)),
+            getAttribute: (k: string) => metaAttrs.get(k) ?? null,
+            setAttribute: (k: string, v: string) => {
+              metaAttrs.set(k, String(v));
+            },
           }
         : null,
     getElementById: () => null,
-    createElement: (tag) => ({ tag, id: "", textContent: "" }),
+    createElement: (_tag: string): BridgeStyleElement => ({ id: "", textContent: "" }),
   };
 
-  const parent = {
-    postMessage(msg, origin) {
-      sentToParent.push({ msg, origin });
+  const parent: BridgeTargetWindow = {
+    postMessage(msg: unknown, origin: string) {
+      sentToParent.push({ msg: msg as Record<string, unknown>, origin });
     },
   };
 
-  const win = {
+  const win: FakeWin = {
     parent,
     innerWidth: 380,
-    requestAnimationFrame: (fn) => fn(),
-    addEventListener(type, fn) {
-      if (!winListeners.has(type)) winListeners.set(type, []);
-      winListeners.get(type).push(fn);
+    requestAnimationFrame: (fn: () => void) => fn(),
+    addEventListener(type: string, fn: (ev: BridgeMessageEvent) => void) {
+      const list = winListeners.get(type) || [];
+      list.push(fn);
+      winListeners.set(type, list);
     },
-    removeEventListener(type, fn) {
-      winListeners.set(type, (winListeners.get(type) || []).filter((f) => f !== fn));
+    removeEventListener(type: string, fn: (ev: BridgeMessageEvent) => void) {
+      winListeners.set(
+        type,
+        (winListeners.get(type) || []).filter((f) => f !== fn)
+      );
     },
-    emit(type, ev) {
+    emit(type: string, ev: BridgeMessageEvent) {
       for (const fn of [...(winListeners.get(type) || [])]) fn(ev);
     },
   };
@@ -86,12 +135,23 @@ function makeFakeEnv() {
   return { win, doc, parent, sentToParent, attrs, styleProps, metaAttrs };
 }
 
-function buildValidPanelHtml(overrides = {}) {
+interface PanelHtmlOverrides {
+  css?: string;
+  htmlTag?: string;
+  metaTag?: string;
+  cspTag?: string;
+  bodyTag?: string;
+  scriptBlock?: string;
+}
+
+function buildValidPanelHtml(overrides: PanelHtmlOverrides = {}): string {
   const css = overrides.css ?? TOKENS_CSS;
-  const htmlTag = overrides.htmlTag ?? '<html lang="en" style="background:#141311;color-scheme:dark">';
+  const htmlTag = overrides.htmlTag ?? '<html lang="en" style="background:#0B0D12;color-scheme:dark">';
   const metaTag = overrides.metaTag ?? '<meta name="color-scheme" content="dark">';
-  const cspTag = overrides.cspTag ?? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">`;
-  const bodyTag = overrides.bodyTag ?? '<body style="background:#141311">';
+  const cspTag =
+    overrides.cspTag ??
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">`;
+  const bodyTag = overrides.bodyTag ?? '<body style="background:#0B0D12">';
   const scriptBlock = overrides.scriptBlock ?? "<script>/*__BOOT__*/const ok=1;</script>";
   return `<!doctype html>${htmlTag}<head>${metaTag}${cspTag}<style>${css}</style></head>${bodyTag}<main>Panel</main>${scriptBlock}</body></html>`;
 }
@@ -99,12 +159,14 @@ function buildValidPanelHtml(overrides = {}) {
 describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
   it("validates ev.source strictly, supports coalesced/retried ui/initialize, detects serverTools, and measures RTT", async () => {
     const env = makeFakeEnv();
+    const sentMsgs: Array<{ method?: string; id?: number }> = [];
     let clockMs = 1000;
     let initAttempts = 0;
 
-    const parent = {
-      postMessage(msg) {
-        env.sentToParent.push(msg);
+    const parent: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown) {
+        const msg = rawMsg as { method?: string; id?: number };
+        sentMsgs.push(msg);
         if (msg.method === "ui/initialize") {
           initAttempts += 1;
           if (initAttempts === 1) {
@@ -140,7 +202,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
                 result: {
                   protocolVersion: LATEST_PROTOCOL_VERSION,
                   hostCapabilities: { serverTools: {} },
-                  hostContext: { theme: "dark", styles: { variables: { "--color-background-primary": "#141311" } } },
+                  hostContext: { theme: "dark", styles: { variables: { "--color-background-primary": "#0B0D12" } } },
                 },
               },
             });
@@ -181,7 +243,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
     // Zero size-changed RPC spam in side panes
     assert.equal(
-      env.sentToParent.some((m) => m.method === "ui/notifications/size-changed"),
+      sentMsgs.some((m) => m.method === "ui/notifications/size-changed"),
       false,
       "side panes must emit zero size-changed notifications"
     );
@@ -229,8 +291,9 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
   it("detects missing serverTools capability and enforces alpha >= 0.9 guard on --color-background-primary", async () => {
     const env = makeFakeEnv();
-    const parent = {
-      postMessage(msg) {
+    const parent: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown) {
+        const msg = rawMsg as { method?: string; id?: number };
         if (msg.method === "ui/initialize") {
           setImmediate(() =>
             env.win.emit("message", {
@@ -241,7 +304,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
                 result: {
                   protocolVersion: LATEST_PROTOCOL_VERSION,
                   hostCapabilities: {},
-                  hostContext: { styles: { variables: { "--color-background-primary": "#FAF8F4" } } },
+                  hostContext: { styles: { variables: { "--color-background-primary": "#F8FAFD" } } },
                 },
               },
             })
@@ -257,18 +320,24 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
     assert.equal(env.attrs.get("data-theme"), "light"); // inferred from luminance > 0.45
 
     // Alpha < 0.9 guard
-    const props = new Map();
-    const fakeEl = { style: { setProperty: (k, v) => props.set(k, v) } };
-    for (const bad of ["transparent", "rgba(0,0,0,0)", "rgba(255,255,255,0.89)", "#14131180", "#fff0"]) {
+    const props = new Map<string, string>();
+    const fakeEl: BridgeStyleTarget = {
+      style: {
+        setProperty: (k: string, v: string) => {
+          props.set(k, v);
+        },
+      },
+    };
+    for (const bad of ["transparent", "rgba(0,0,0,0)", "rgba(255,255,255,0.89)", "#0B0D1280", "#fff0"]) {
       applyHostStyleVariables({ "--color-background-primary": bad }, fakeEl);
       assert.equal(props.has("--color-background-primary"), false, `should reject ${bad}`);
     }
-    applyHostStyleVariables({ "--color-background-primary": "rgba(20, 19, 17, 0.95)" }, fakeEl);
-    assert.equal(props.get("--color-background-primary"), "rgba(20, 19, 17, 0.95)");
+    applyHostStyleVariables({ "--color-background-primary": "rgba(11, 13, 18, 0.95)" }, fakeEl);
+    assert.equal(props.get("--color-background-primary"), "rgba(11, 13, 18, 0.95)");
 
     assert.equal(parseColorLum("transparent"), null);
-    assert.ok(parseColorLum("#141311") < 0.2);
-    assert.ok(parseColorLum("#FAF8F4") > 0.9);
+    assert.ok((parseColorLum("#0B0D12") ?? 1) < 0.2);
+    assert.ok((parseColorLum("#F8FAFD") ?? 0) > 0.9);
     assert.equal(applyHostContext({ theme: "dark" }, env.doc), "dark");
 
     // Calling callServerTool without serverTools capability must reject cleanly
@@ -287,9 +356,10 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
   it("cancels in-flight connect() retries on close(), pins targetOrigin, and scopes progress timers by token", async () => {
     const env = makeFakeEnv();
     let attempts = 0;
-    const parent = {
-      postMessage(msg, origin) {
-        env.sentToParent.push({ msg, origin });
+    const parent: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown, origin: string) {
+        const msg = rawMsg as { method?: string; id?: number };
+        env.sentToParent.push({ msg: msg as Record<string, unknown>, origin });
         if (msg.method === "ui/initialize") {
           attempts += 1;
           setTimeout(() => {
@@ -328,8 +398,9 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
     // Progress notification for token A must NOT keep token B alive forever
     const env2 = makeFakeEnv();
-    const parent2 = {
-      postMessage(msg) {
+    const parent2: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown) {
+        const msg = rawMsg as { method?: string; id?: number };
         if (msg.method === "ui/initialize") {
           setImmediate(() =>
             env2.win.emit("message", {
@@ -367,8 +438,14 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
   it("hardens color/alpha parsing, cancels retry sleep immediately on close(), locks ev.origin, deep-merges styles, and guards request()/callbacks", async () => {
     // 1. Fail-closed color/alpha parsing (no bypasses on none/scientific/var/dots)
-    const props = new Map();
-    const fakeEl = { style: { setProperty: (k, v) => props.set(k, v) } };
+    const props = new Map<string, string>();
+    const fakeEl: BridgeStyleTarget = {
+      style: {
+        setProperty: (k: string, v: string) => {
+          props.set(k, v);
+        },
+      },
+    };
     for (const bad of [
       "oklch(0.2 0 0 / none)",
       "hsl(0 0% 0% / 5e-2)",
@@ -388,9 +465,10 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
     // 2. close() during retryDelayMs sleep cancels timer immediately (< 50ms for 600ms delay)
     const env = makeFakeEnv();
-    const parent = {
-      postMessage(msg, origin) {
-        env.sentToParent.push({ msg, origin });
+    const parent: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown, origin: string) {
+        const msg = rawMsg as { method?: string; id?: number };
+        env.sentToParent.push({ msg: msg as Record<string, unknown>, origin });
         if (msg.method === "ui/initialize") {
           setImmediate(() =>
             env.win.emit("message", {
@@ -417,9 +495,10 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
     // 3. Post-init origin locking + deep-merged hostCtx.styles.{variables,css} + throwing callback isolation
     const env2 = makeFakeEnv();
-    const parent2 = {
-      postMessage(msg, origin) {
-        env2.sentToParent.push({ msg, origin });
+    const parent2: BridgeTargetWindow = {
+      postMessage(rawMsg: unknown, origin: string) {
+        const msg = rawMsg as { method?: string; id?: number };
+        env2.sentToParent.push({ msg: msg as Record<string, unknown>, origin });
         if (msg.method === "ui/initialize") {
           setImmediate(() =>
             env2.win.emit("message", {
@@ -434,7 +513,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
                   hostContext: {
                     theme: "dark",
                     styles: {
-                      variables: { "--color-background-primary": "#141311", "--keep-var": "1" },
+                      variables: { "--color-background-primary": "#0B0D12", "--keep-var": "1" },
                       css: { fonts: "@font-face { font-family: A; }" },
                     },
                   },
@@ -451,7 +530,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
 
     // Post-init notifications use locked origin instead of "*"
     const initNotif = env2.sentToParent.find((m) => m.msg.method === "ui/notifications/initialized");
-    assert.equal(initNotif.origin, "https://locked-host.example");
+    assert.equal(initNotif?.origin, "https://locked-host.example");
 
     // Spoofed origin after lock is ignored even with matching source
     env2.win.emit("message", {
@@ -463,7 +542,7 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
         params: { theme: "light" },
       },
     });
-    assert.equal(app2.getHostContext().theme, "dark");
+    assert.equal(app2.getHostContext()?.theme, "dark");
 
     // Deep-merge preserves existing styles.variables and styles.css.fonts, and throwing callback does not reject
     app2.onhostcontextchanged = () => {
@@ -480,16 +559,16 @@ describe("agy-mcp-kit Panel Bridge (SEP-1865)", () => {
     });
     await new Promise((r) => setImmediate(r));
     const merged = app2.getHostContext();
-    assert.equal(merged.styles.variables["--keep-var"], "1");
-    assert.equal(merged.styles.variables["--new-var"], "2");
-    assert.equal(merged.styles.css.fonts, "@font-face { font-family: A; }");
-    assert.equal(merged.styles.css.extra, "body{}");
+    assert.equal(merged?.styles?.variables?.["--keep-var"], "1");
+    assert.equal(merged?.styles?.variables?.["--new-var"], "2");
+    assert.equal(merged?.styles?.css?.fonts, "@font-face { font-family: A; }");
+    assert.equal(merged?.styles?.css?.extra, "body{}");
     app2.close();
   });
 });
 
-describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
-  it("passes on canonical tokens.css + valid Editorial-Warm HTML", () => {
+describe("agy-mcp-kit Panel QA Gate (guard.ts) & tokens.css", () => {
+  it("passes on canonical Lucid Indigo tokens.css + valid HTML", () => {
     const html = buildValidPanelHtml();
     const report = assertPanelInvariants(html, {
       maxBytes: DEFAULT_MAX_BYTES,
@@ -497,7 +576,16 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
     });
     assert.equal(report.ok, true);
     assert.ok(report.bytes < DEFAULT_MAX_BYTES);
-    assert.equal(FAMILY_TOKENS.length, 16);
+    assert.equal(DEFAULT_MAX_BYTES, 65_536);
+    assert.equal(WARN_BYTES, 57_344);
+    assert.equal(HARD_MAX_BYTES, 65_536);
+    assert.equal(FAMILY_TOKENS.length, 22);
+    assert.equal(DARK_BG_HEX, "#0B0D12");
+    assert.equal(LIGHT_BG_HEX, "#F8FAFD");
+    assert.equal(DARK_ACCENT_HEX, "#6895FF");
+    assert.equal(LIGHT_ACCENT_HEX, "#2952CC");
+    assert.equal(DARK_OK_HEX, "#34D399");
+    assert.equal(LIGHT_OK_HEX, "#059669");
 
     // Valid CSP where a quoted directive precedes default-src 'none' MUST pass
     const reorderedCsp = buildValidPanelHtml({
@@ -516,19 +604,20 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
   });
 
   it("rejects every single invariant violation cleanly", () => {
-    const cases = [
+    const cases: Array<[string, string, PanelGuardOptions]> = [
       ["byte budget exceeded", buildValidPanelHtml(), { maxBytes: 100 }],
       ["multiple scripts", buildValidPanelHtml({ scriptBlock: "<script>1</script><script>2</script>" }), {}],
       ["missing CSP", buildValidPanelHtml({ cspTag: "" }), {}],
-      ["CSP outside head", buildValidPanelHtml({ cspTag: "", bodyTag: '<body style="background:#141311"><!-- default-src \'none\' -->' }), {}],
+      ["CSP outside head", buildValidPanelHtml({ cspTag: "", bodyTag: '<body style="background:#0B0D12"><!-- default-src \'none\' -->' }), {}],
       ["commented-out CSP in head", buildValidPanelHtml({ cspTag: `<!-- <meta http-equiv="Content-Security-Policy" content="default-src 'none'"> -->` }), {}],
       ["loose CSP default-src 'none' *", buildValidPanelHtml({ cspTag: `<meta http-equiv="Content-Security-Policy" content="default-src 'none' *">` }), {}],
       ["external URL", buildValidPanelHtml({ scriptBlock: '<script>const u="https://user:secret@cdn.example.com/a.js?token=TOPSECRET";</script>' }), {}],
       ["wss external URL", buildValidPanelHtml({ scriptBlock: '<script>const ws="wss://evil.example.com/sock";</script>' }), {}],
-      ["protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#141311"><img src="//cdn.example.com/x.png">' }), {}],
-      ["unquoted protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#141311"><img src=//cdn.example.com/x.png>' }), {}],
+      ["protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#0B0D12"><img src="//cdn.example.com/x.png">' }), {}],
+      ["unquoted protocol-relative URL", buildValidPanelHtml({ bodyTag: '<body style="background:#0B0D12"><img src=//cdn.example.com/x.png>' }), {}],
       ["CSS url(//...)", buildValidPanelHtml({ css: `${TOKENS_CSS}\n.bg{background:url(//cdn.example.com/x.png)}` }), {}],
       ["missing dark html lock", buildValidPanelHtml({ htmlTag: "<html>" }), {}],
+      ["wrong dark html bg lock", buildValidPanelHtml({ htmlTag: '<html lang="en" style="background:#111111;color-scheme:dark">' }), {}],
       ["missing dark meta lock", buildValidPanelHtml({ metaTag: '<meta name="color-scheme" content="dark light">' }), {}],
       ["commented dark meta lock", buildValidPanelHtml({ metaTag: '<!-- <meta name="color-scheme" content="dark"> -->' }), {}],
       ["missing dark body lock", buildValidPanelHtml({ bodyTag: "<body>" }), {}],
@@ -544,9 +633,11 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       ["parseFromString sink", buildValidPanelHtml({ scriptBlock: "<script>p.parseFromString('<p>x</p>','text/html');</script>" }), {}],
       ["top-level return syntax error", buildValidPanelHtml({ scriptBlock: "<script>return 1;</script>" }), {}],
       ["--buncss-* leakage", buildValidPanelHtml({ css: `${TOKENS_CSS}\n.x{--buncss-foo:1}` }), {}],
-      ["wrong light --ok color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#2F7D53", "#3D8B60") }), {}],
-      ["missing family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s0: #EAE5DC;", "") }), {}],
-      ["commented-out family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s0: #EAE5DC;", "/* --s0: #EAE5DC; */") }), {}],
+      ["wrong dark --ac color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#6895FF", "#3B82F6") }), {}],
+      ["wrong light --ac color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#2952CC", "#1D4ED8") }), {}],
+      ["wrong light --ok color", buildValidPanelHtml({ css: TOKENS_CSS.replace("#059669", "#16A34A") }), {}],
+      ["missing family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s3: #E4EAF4;", "") }), {}],
+      ["commented-out family token", buildValidPanelHtml({ css: TOKENS_CSS.replace("--s3: #E4EAF4;", "/* --s3: #E4EAF4; */") }), {}],
       ["missing reduced motion", buildValidPanelHtml({ css: TOKENS_CSS.replace(/prefers-reduced-motion/g, "x-motion") }), {}],
       ["commented-out reduced motion", buildValidPanelHtml({ css: TOKENS_CSS.replace(/@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*$/i, "/* @media (prefers-reduced-motion: reduce) {} */") }), {}],
     ];
@@ -561,15 +652,29 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       assert.throws(() => assertPanelInvariants(html, opts), /Panel invariant gate failed/, label);
     }
 
+    // Warn threshold (57_344 / 56 KiB) vs hard threshold (65_536 / 64 KiB)
+    const warnPad = "a".repeat(57_500 - Buffer.byteLength(buildValidPanelHtml(), "utf8"));
+    const warnRes = checkPanelInvariants(
+      buildValidPanelHtml({ bodyTag: `<body style="background:#0B0D12"><p>${warnPad}</p>` })
+    );
+    assert.equal(warnRes.ok, true);
+    assert.equal(warnRes.warnings.length, 1);
+    const overPad = "a".repeat(65_700 - Buffer.byteLength(buildValidPanelHtml(), "utf8"));
+    const overRes = checkPanelInvariants(
+      buildValidPanelHtml({ bodyTag: `<body style="background:#0B0D12"><p>${overPad}</p>` })
+    );
+    assert.equal(overRes.ok, false);
+    assert.match(overRes.errors[0], /hard size gate exceeded/);
+
     // CLI unknown --* flags must fail closed with exit code 2
-    const guardPath = path.join(REPO_ROOT, "panel", "guard.mjs");
+    const guardPath = path.join(REPO_ROOT, "panel", "guard.ts");
     let exitCode = 0;
     try {
       execFileSync(process.execPath, [guardPath, "--unknown-flag", "dummy.html"], { stdio: "pipe" });
     } catch (err) {
-      exitCode = err.status;
+      exitCode = (err as { status?: number }).status ?? 1;
     }
-    assert.equal(exitCode, 2, "guard.mjs CLI must exit 2 on unknown --* flags");
+    assert.equal(exitCode, 2, "guard.ts CLI must exit 2 on unknown --* flags");
   });
 
   it("enforces 1:1 i18n key + placeholder parity and zero stray CJK in EN UI copy with remediation errors", () => {
@@ -618,7 +723,7 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
     assert.match(emptyZh.errors[0], /Empty zh translation for key "stats\.empty"/);
 
     // Non-object input fails closed
-    const invalidInput = checkI18nParity(null, validZh);
+    const invalidInput = checkI18nParity(null as unknown as I18nMap, validZh);
     assert.equal(invalidInput.ok, false);
     assert.match(invalidInput.errors[0], /Invalid en translation map/);
 
@@ -663,14 +768,14 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
       // Sync selected files into temp target repo (MIT LICENSE auto-included)
       execFileSync(
         "bash",
-        [syncScript, "--files", "src/test_guard.rs,panel/tokens.css,panel/guard.mjs", tmpRepo],
+        [syncScript, "--files", "src/test_guard.rs,panel/tokens.css,panel/guard.ts", tmpRepo],
         { cwd: REPO_ROOT, stdio: "pipe" }
       );
 
       assert.ok(fs.existsSync(path.join(tmpRepo, ".agy-kit-sync.json")));
       assert.ok(fs.existsSync(path.join(tmpRepo, "src/kit/test_guard.rs")));
       assert.ok(fs.existsSync(path.join(tmpRepo, "panel/kit/tokens.css")));
-      assert.ok(fs.existsSync(path.join(tmpRepo, "panel/kit/guard.mjs")));
+      assert.ok(fs.existsSync(path.join(tmpRepo, "panel/kit/guard.ts")));
       assert.ok(fs.existsSync(path.join(tmpRepo, "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE")));
 
       // Selective re-sync of 1 file MUST merge (preserve previously tracked files in .agy-kit-sync.json)
@@ -679,18 +784,22 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
         [syncScript, "--files", "src/test_guard.rs", tmpRepo],
         { cwd: REPO_ROOT, stdio: "pipe" }
       );
-      const syncMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8"));
+      const syncMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8")) as {
+        files: Record<string, unknown>;
+      };
       assert.ok(syncMeta.files["panel/kit/tokens.css"], "selective sync must keep previously tracked files");
 
       // P2-1: Passing --map against an existing selective .agy-kit-sync.json must preserve subset (not expand to all 10 files)
       execFileSync(
         "bash",
-        [syncScript, "--map", "panel/guard.mjs=panel/custom-guard.mjs", tmpRepo],
+        [syncScript, "--map", "panel/guard.ts=panel/custom-guard.ts", tmpRepo],
         { cwd: REPO_ROOT, stdio: "pipe" }
       );
-      const mappedMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8"));
+      const mappedMeta = JSON.parse(fs.readFileSync(path.join(tmpRepo, ".agy-kit-sync.json"), "utf8")) as {
+        files: Record<string, unknown>;
+      };
       assert.equal(Object.keys(mappedMeta.files).length, 4, "--map must preserve selective subset count");
-      assert.ok(mappedMeta.files["panel/custom-guard.mjs"]);
+      assert.ok(mappedMeta.files["panel/custom-guard.ts"]);
       assert.equal(mappedMeta.files["src/kit/mcp_protocol.rs"], undefined);
 
       // P2-1: Reject case-colliding APFS destinations
@@ -701,11 +810,11 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
             [
               syncScript,
               "--files",
-              "panel/tokens.css,panel/guard.mjs",
+              "panel/tokens.css,panel/guard.ts",
               "--map",
               "panel/tokens.css=panel/kit/item.txt",
               "--map",
-              "panel/guard.mjs=panel/kit/ITEM.txt",
+              "panel/guard.ts=panel/kit/ITEM.txt",
               tmpRepo,
             ],
             { cwd: REPO_ROOT, stdio: "pipe" }
@@ -773,6 +882,26 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
     }
   });
 
+  it("supports --panel preset and multi-repo sync/--check in one command", () => {
+    const tmpA = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kit-panel-a-"));
+    const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kit-panel-b-"));
+    try {
+      const syncScript = path.join(REPO_ROOT, "scripts", "sync-kit.sh");
+      execFileSync("bash", [syncScript, "--panel", tmpA, tmpB], { cwd: REPO_ROOT, stdio: "pipe" });
+      for (const dir of [tmpA, tmpB]) {
+        assert.ok(fs.existsSync(path.join(dir, "panel/kit/tokens.css")));
+        assert.ok(fs.existsSync(path.join(dir, "panel/kit/bridge.ts")));
+        assert.ok(fs.existsSync(path.join(dir, "panel/kit/guard.ts")));
+        assert.ok(fs.existsSync(path.join(dir, "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE")));
+        assert.equal(fs.existsSync(path.join(dir, "src/kit/mcp_protocol.rs")), false);
+      }
+      execFileSync("bash", [syncScript, "--check", tmpA, tmpB], { cwd: REPO_ROOT, stdio: "pipe" });
+    } finally {
+      fs.rmSync(tmpA, { recursive: true, force: true });
+      fs.rmSync(tmpB, { recursive: true, force: true });
+    }
+  });
+
   it("check_sanitized.sh scans working tree and staged index, redacts secrets, and fails closed", () => {
     const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kit-sanitize-test-"));
     try {
@@ -798,7 +927,8 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
         execFileSync("bash", ["scripts/check_sanitized.sh"], { cwd: tmpRepo, stdio: "pipe" });
       } catch (err) {
         failed = true;
-        stderr = String(err.stderr || "") + String(err.stdout || "");
+        const execErr = err as { stderr?: Buffer | string; stdout?: Buffer | string };
+        stderr = String(execErr.stderr || "") + String(execErr.stdout || "");
       }
       assert.equal(failed, true, "check_sanitized.sh must catch staged-only secret");
       assert.ok(stderr.includes("leak.txt:1"), "must report file:line");
@@ -815,7 +945,8 @@ describe("agy-mcp-kit Sync & Drift Tooling (scripts/sync-kit.sh)", () => {
         execFileSync("bash", ["scripts/check_sanitized.sh"], { cwd: tmpRepo, stdio: "pipe" });
       } catch (err) {
         colonFailed = true;
-        colonErr = String(err.stderr || "") + String(err.stdout || "");
+        const execErr = err as { stderr?: Buffer | string; stdout?: Buffer | string };
+        colonErr = String(execErr.stderr || "") + String(execErr.stdout || "");
       }
       assert.equal(colonFailed, true, "check_sanitized.sh must catch /Users/<user>/Code path");
       assert.ok(colonErr.includes("a:b.txt:1"), "must report full filename with colon + line number");

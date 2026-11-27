@@ -4,8 +4,8 @@
 # Usage:
 #   ./scripts/sync-kit.sh --update-manifest
 #   ./scripts/sync-kit.sh --check-manifest
-#   ./scripts/sync-kit.sh [--files f1,f2,...] [--map src=dest ...] [--force] <target-repo-dir>
-#   ./scripts/sync-kit.sh --check <target-repo-dir>
+#   ./scripts/sync-kit.sh [--panel] [--files f1,f2,...] [--map src=dest ...] [--force] <target-repo-dir> [...]
+#   ./scripts/sync-kit.sh --check <target-repo-dir> [...]
 set -euo pipefail
 
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,8 +16,15 @@ usage() {
 Usage:
   sync-kit.sh --update-manifest
   sync-kit.sh --check-manifest
-  sync-kit.sh [--files src1,src2,...] [--map src=dest ...] [--force] <target-repo-dir>
-  sync-kit.sh --check <target-repo-dir>
+  sync-kit.sh [--panel] [--files src1,src2,...] [--map src=dest ...] [--force] <target-repo-dir> [...]
+  sync-kit.sh --check <target-repo-dir> [...]
+
+Options:
+  --panel            Sync the unified Lucid Indigo panel kit (panel/tokens.css,panel/bridge.ts,panel/guard.ts)
+  --files csv        Comma-separated canonical kit paths to sync
+  --map src=dest     Override destination path inside each target repo
+  --force            Overwrite locally modified target files
+  --check            Verify zero SHA-256 drift in one or more target repos
 EOF
   exit 2
 }
@@ -26,7 +33,7 @@ MODE="sync"
 FILES_CSV=""
 MAPS=()
 FORCE="0"
-TARGET_DIR=""
+TARGET_DIRS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,26 +41,42 @@ while [ $# -gt 0 ]; do
     --check-manifest)  MODE="check-manifest"; shift ;;
     --check)           MODE="check"; shift ;;
     --force)           FORCE="1"; shift ;;
+    --panel)
+      if [ -n "$FILES_CSV" ]; then
+        FILES_CSV="${FILES_CSV},panel/tokens.css,panel/bridge.ts,panel/guard.ts"
+      else
+        FILES_CSV="panel/tokens.css,panel/bridge.ts,panel/guard.ts"
+      fi
+      shift ;;
     --files)
       [ $# -ge 2 ] || usage
-      FILES_CSV="$2"; shift 2 ;;
+      if [ -n "$FILES_CSV" ]; then
+        FILES_CSV="${FILES_CSV},$2"
+      else
+        FILES_CSV="$2"
+      fi
+      shift 2 ;;
     --map)
       [ $# -ge 2 ] || usage
       MAPS+=("$2"); shift 2 ;;
     -h|--help) usage ;;
     -*) echo "sync-kit: unknown option: $1" >&2; usage ;;
     *)
-      [ -z "$TARGET_DIR" ] || usage
-      TARGET_DIR="$1"; shift ;;
+      TARGET_DIRS+=("$1"); shift ;;
   esac
 done
 
-export KIT_ROOT MANIFEST MODE FILES_CSV FORCE TARGET_DIR
+export KIT_ROOT MANIFEST MODE FILES_CSV FORCE
 MAP_JOINED=""
 if [ ${#MAPS[@]} -gt 0 ]; then
   MAP_JOINED="$(printf '%s\n' "${MAPS[@]}")"
 fi
 export MAP_JOINED
+TARGETS_JOINED=""
+if [ ${#TARGET_DIRS[@]} -gt 0 ]; then
+  TARGETS_JOINED="$(printf '%s\n' "${TARGET_DIRS[@]}")"
+fi
+export TARGETS_JOINED
 
 python3 - <<'PY'
 import hashlib
@@ -70,7 +93,7 @@ manifest_path = Path(os.environ["MANIFEST"])
 mode = os.environ["MODE"]
 files_csv = os.environ.get("FILES_CSV", "").strip()
 force = os.environ.get("FORCE", "0") == "1"
-target_raw = os.environ.get("TARGET_DIR", "").strip()
+target_list = [l for l in os.environ.get("TARGETS_JOINED", "").splitlines() if l.strip()]
 map_lines = [l for l in os.environ.get("MAP_JOINED", "").splitlines() if l.strip()]
 
 CANONICAL_FILES = [
@@ -79,8 +102,8 @@ CANONICAL_FILES = [
     ("src/html_boot.rs", "src/kit/html_boot.rs"),
     ("src/test_guard.rs", "src/kit/test_guard.rs"),
     ("panel/tokens.css", "panel/kit/tokens.css"),
-    ("panel/bridge.js", "panel/kit/bridge.js"),
-    ("panel/guard.mjs", "panel/kit/guard.mjs"),
+    ("panel/bridge.ts", "panel/kit/bridge.ts"),
+    ("panel/guard.ts", "panel/kit/guard.ts"),
     ("scripts/check_sanitized.sh", "scripts/check_sanitized.sh"),
     (".github/sanitize-patterns.txt", ".github/sanitize-patterns.txt"),
     ("LICENSE", "THIRD_PARTY_LICENSES/agy-mcp-kit-LICENSE"),
@@ -264,193 +287,198 @@ if mode == "check-manifest":
     print(f"sync-kit: kit-manifest.json verified clean ({len(expected['files'])} files)")
     sys.exit(0)
 
-if not target_raw:
+if not target_list:
     fail("<target-repo-dir> is required", code=2)
 
-target_raw_path = Path(target_raw)
-if target_raw_path.is_symlink():
-    fail(f"refusing symlinked target directory: {target_raw}")
-target_dir = target_raw_path.resolve()
-if not target_dir.is_dir():
-    fail(f"target directory does not exist: {target_dir}")
-
 manifest = compute_manifest()
-sync_file = target_dir / SYNC_META_NAME
-validate_sync_file(sync_file)
 
-if mode == "check":
-    if not sync_file.exists():
-        fail(f"missing {sync_file}; run sync-kit.sh <target-repo-dir> first")
-    sync_meta = load_json_nofollow(sync_file)
-    synced_files = sync_meta.get("files", {})
-    if not isinstance(synced_files, dict) or not synced_files:
-        fail(f"no synced files recorded in {sync_file}")
-    drifted = []
-    seen_lower: dict[str, str] = {}
-    for dest_rel, info in sorted(synced_files.items()):
-        dest_path = validate_dest_rel(target_dir, dest_rel)
-        dest_low = dest_rel.lower()
-        if dest_low in seen_lower:
-            drifted.append(f"  {dest_rel}: case-colliding destination with '{seen_lower[dest_low]}'")
-            continue
-        seen_lower[dest_low] = dest_rel
-        if not isinstance(info, dict):
-            drifted.append(f"  {dest_rel}: malformed metadata entry")
-            continue
-        src_rel = info.get("source")
-        recorded_sha = info.get("sha256")
-        if src_rel not in manifest["files"]:
-            drifted.append(f"  {dest_rel}: unknown kit source '{src_rel}'")
-            continue
-        canonical_sha = manifest["files"][src_rel]["sha256"]
-        if not dest_path.exists():
-            drifted.append(f"  {dest_rel}: missing file")
-            continue
-        actual_sha = sha256_file_nofollow(dest_path)
-        if actual_sha != recorded_sha:
-            drifted.append(f"  {dest_rel}: local modification (expected {str(recorded_sha)[:12]}, got {actual_sha[:12]})")
-        elif actual_sha != canonical_sha:
-            drifted.append(f"  {dest_rel}: behind agy-mcp-kit {src_rel} (kit {canonical_sha[:12]}, target {actual_sha[:12]})")
-    if drifted:
-        sys.stderr.write("sync-kit: drift detected:\n" + "\n".join(drifted) + "\n")
-        sys.exit(1)
-    print(f"sync-kit: zero drift verified across {len(synced_files)} synced file(s) in {target_dir.name}")
-    sys.exit(0)
+def process_target(target_raw: str) -> None:
+    target_raw_path = Path(target_raw)
+    if target_raw_path.is_symlink():
+        fail(f"refusing symlinked target directory: {target_raw}")
+    target_dir = target_raw_path.resolve()
+    if not target_dir.is_dir():
+        fail(f"target directory does not exist: {target_dir}")
 
-# mode == "sync"
-custom_maps = {}
-for item in map_lines:
-    if "=" not in item:
-        fail(f"invalid --map '{item}', expected src=dest", code=2)
-    s, d = item.split("=", 1)
-    s = s.strip()
-    d = d.strip()
-    if s not in manifest["files"]:
-        fail(f"unknown kit source in --map: '{s}'", code=2)
-    validate_dest_rel(target_dir, d)
-    custom_maps[s] = d
+    sync_file = target_dir / SYNC_META_NAME
+    validate_sync_file(sync_file)
 
-prev_files: dict[str, dict] = {}
-if sync_file.exists():
-    prev = load_json_nofollow(sync_file)
-    raw_prev = prev.get("files", {})
-    if not isinstance(raw_prev, dict):
-        fail(f"malformed files map in {sync_file}")
-    for dest, info in raw_prev.items():
-        validate_dest_rel(target_dir, dest)
-        if not isinstance(info, dict) or "source" not in info:
-            fail(f"malformed entry for '{dest}' in {sync_file}")
-        prev_files[dest] = info
+    if mode == "check":
+        if not sync_file.exists():
+            fail(f"missing {sync_file}; run sync-kit.sh <target-repo-dir> first")
+        sync_meta = load_json_nofollow(sync_file)
+        synced_files = sync_meta.get("files", {})
+        if not isinstance(synced_files, dict) or not synced_files:
+            fail(f"no synced files recorded in {sync_file}")
+        drifted = []
+        seen_lower: dict[str, str] = {}
+        for dest_rel, info in sorted(synced_files.items()):
+            dest_path = validate_dest_rel(target_dir, dest_rel)
+            dest_low = dest_rel.lower()
+            if dest_low in seen_lower:
+                drifted.append(f"  {dest_rel}: case-colliding destination with '{seen_lower[dest_low]}'")
+                continue
+            seen_lower[dest_low] = dest_rel
+            if not isinstance(info, dict):
+                drifted.append(f"  {dest_rel}: malformed metadata entry")
+                continue
+            src_rel = info.get("source")
+            recorded_sha = info.get("sha256")
+            if src_rel not in manifest["files"]:
+                drifted.append(f"  {dest_rel}: unknown kit source '{src_rel}'")
+                continue
+            canonical_sha = manifest["files"][src_rel]["sha256"]
+            if not dest_path.exists():
+                drifted.append(f"  {dest_rel}: missing file")
+                continue
+            actual_sha = sha256_file_nofollow(dest_path)
+            if actual_sha != recorded_sha:
+                drifted.append(f"  {dest_rel}: local modification (expected {str(recorded_sha)[:12]}, got {actual_sha[:12]})")
+            elif actual_sha != canonical_sha:
+                drifted.append(f"  {dest_rel}: behind agy-mcp-kit {src_rel} (kit {canonical_sha[:12]}, target {actual_sha[:12]})")
+        if drifted:
+            sys.stderr.write(f"sync-kit: drift detected in {target_dir.name}:\n" + "\n".join(drifted) + "\n")
+            sys.exit(1)
+        print(f"sync-kit: zero drift verified across {len(synced_files)} synced file(s) in {target_dir.name}")
+        return
 
-prev_dest_by_src = {info["source"]: dest for dest, info in prev_files.items() if isinstance(info.get("source"), str)}
+    # mode == "sync"
+    custom_maps = {}
+    for item in map_lines:
+        if "=" not in item:
+            fail(f"invalid --map '{item}', expected src=dest", code=2)
+        s, d = item.split("=", 1)
+        s = s.strip()
+        d = d.strip()
+        if s not in manifest["files"]:
+            fail(f"unknown kit source in --map: '{s}'", code=2)
+        validate_dest_rel(target_dir, d)
+        custom_maps[s] = d
 
-# Determine selected (src, dest) pairs.
-selected: list[tuple[str, str]] = []
-if files_csv:
-    seen_srcs = set()
-    for raw in files_csv.split(","):
-        src = raw.strip()
-        if not src:
-            continue
-        if src not in manifest["files"]:
-            fail(f"unknown kit file '{src}'")
-        if src in seen_srcs:
-            continue
-        seen_srcs.add(src)
-        dest = custom_maps.get(src, prev_dest_by_src.get(src, manifest["files"][src]["defaultDest"]))
-        selected.append((src, dest))
-    # Always include MIT LICENSE notice alongside synced kit files.
-    if "LICENSE" not in seen_srcs:
-        lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
-        selected.append(("LICENSE", lic_dest))
-elif prev_files:
-    seen_srcs = set()
-    for dest, info in sorted(prev_files.items()):
-        src = info["source"]
-        if src in manifest["files"] and src not in seen_srcs:
-            selected.append((src, custom_maps.get(src, dest)))
+    prev_files: dict[str, dict] = {}
+    if sync_file.exists():
+        prev = load_json_nofollow(sync_file)
+        raw_prev = prev.get("files", {})
+        if not isinstance(raw_prev, dict):
+            fail(f"malformed files map in {sync_file}")
+        for dest, info in raw_prev.items():
+            validate_dest_rel(target_dir, dest)
+            if not isinstance(info, dict) or "source" not in info:
+                fail(f"malformed entry for '{dest}' in {sync_file}")
+            prev_files[dest] = info
+
+    prev_dest_by_src = {info["source"]: dest for dest, info in prev_files.items() if isinstance(info.get("source"), str)}
+
+    # Determine selected (src, dest) pairs.
+    selected: list[tuple[str, str]] = []
+    if files_csv:
+        seen_srcs = set()
+        for raw in files_csv.split(","):
+            src = raw.strip()
+            if not src:
+                continue
+            if src not in manifest["files"]:
+                fail(f"unknown kit file '{src}'")
+            if src in seen_srcs:
+                continue
             seen_srcs.add(src)
-    for src, dest in custom_maps.items():
-        if src not in seen_srcs:
+            dest = custom_maps.get(src, prev_dest_by_src.get(src, manifest["files"][src]["defaultDest"]))
             selected.append((src, dest))
-            seen_srcs.add(src)
-    if "LICENSE" not in seen_srcs:
-        lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
-        selected.append(("LICENSE", lic_dest))
-else:
-    for src, meta in manifest["files"].items():
-        selected.append((src, custom_maps.get(src, prev_dest_by_src.get(src, meta["defaultDest"]))))
+        # Always include MIT LICENSE notice alongside synced kit files.
+        if "LICENSE" not in seen_srcs:
+            lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
+            selected.append(("LICENSE", lic_dest))
+    elif prev_files:
+        seen_srcs = set()
+        for dest, info in sorted(prev_files.items()):
+            src = info["source"]
+            if src in manifest["files"] and src not in seen_srcs:
+                selected.append((src, custom_maps.get(src, dest)))
+                seen_srcs.add(src)
+        for src, dest in custom_maps.items():
+            if src not in seen_srcs:
+                selected.append((src, dest))
+                seen_srcs.add(src)
+        if "LICENSE" not in seen_srcs:
+            lic_dest = custom_maps.get("LICENSE", prev_dest_by_src.get("LICENSE", manifest["files"]["LICENSE"]["defaultDest"]))
+            selected.append(("LICENSE", lic_dest))
+    else:
+        for src, meta in manifest["files"].items():
+            selected.append((src, custom_maps.get(src, prev_dest_by_src.get(src, meta["defaultDest"]))))
 
-# Pre-flight validation: reject duplicate/case-colliding destinations, unsafe paths, and unforced local modifications.
-selected_srcs = {src for src, _ in selected}
-dest_seen: dict[str, tuple[str, str]] = {}
-for old_dest, old_info in prev_files.items():
-    old_src = old_info.get("source")
-    if isinstance(old_src, str) and old_src not in selected_srcs:
-        old_low = old_dest.lower()
-        if old_low in dest_seen:
-            orig_dest, orig_src = dest_seen[old_low]
-            fail(f"case-colliding tracked destination '{old_dest}' (collides with '{orig_dest}' for '{orig_src}')")
-        dest_seen[old_low] = (old_dest, old_src)
+    # Pre-flight validation: reject duplicate/case-colliding destinations, unsafe paths, and unforced local modifications.
+    selected_srcs = {src for src, _ in selected}
+    dest_seen: dict[str, tuple[str, str]] = {}
+    for old_dest, old_info in prev_files.items():
+        old_src = old_info.get("source")
+        if isinstance(old_src, str) and old_src not in selected_srcs:
+            old_low = old_dest.lower()
+            if old_low in dest_seen:
+                orig_dest, orig_src = dest_seen[old_low]
+                fail(f"case-colliding tracked destination '{old_dest}' (collides with '{orig_dest}' for '{orig_src}')")
+            dest_seen[old_low] = (old_dest, old_src)
 
-conflicts: list[str] = []
-validated_plan: list[tuple[str, str, Path, Path]] = []
+    conflicts: list[str] = []
+    validated_plan: list[tuple[str, str, Path, Path]] = []
 
-for src, dest in selected:
-    dest_path = validate_dest_rel(target_dir, dest)
-    dest_low = dest.lower()
-    if dest_low in dest_seen:
-        orig_dest, orig_src = dest_seen[dest_low]
-        fail(f"duplicate or case-colliding destination path '{dest}' (collides with '{orig_dest}' for '{orig_src}')")
-    dest_seen[dest_low] = (dest, src)
-    src_path = kit_root / src
+    for src, dest in selected:
+        dest_path = validate_dest_rel(target_dir, dest)
+        dest_low = dest.lower()
+        if dest_low in dest_seen:
+            orig_dest, orig_src = dest_seen[dest_low]
+            fail(f"duplicate or case-colliding destination path '{dest}' (collides with '{orig_dest}' for '{orig_src}')")
+        dest_seen[dest_low] = (dest, src)
+        src_path = kit_root / src
 
-    if dest_path.exists():
-        actual_sha = sha256_file_nofollow(dest_path)
-        prev_sha = prev_files.get(dest, {}).get("sha256")
-        if prev_sha is None:
-            for old_dest, old_info in prev_files.items():
-                if old_info.get("source") == src and old_dest.lower() == dest_low:
-                    prev_sha = old_info.get("sha256")
-                    break
-        canonical_sha = manifest["files"][src]["sha256"]
-        if not force and actual_sha != canonical_sha and actual_sha != prev_sha:
-            conflicts.append(
-                f"  {dest}: local modifications present (pass --force to overwrite)"
-            )
-    validated_plan.append((src, dest, src_path, dest_path))
+        if dest_path.exists():
+            actual_sha = sha256_file_nofollow(dest_path)
+            prev_sha = prev_files.get(dest, {}).get("sha256")
+            if prev_sha is None:
+                for old_dest, old_info in prev_files.items():
+                    if old_info.get("source") == src and old_dest.lower() == dest_low:
+                        prev_sha = old_info.get("sha256")
+                        break
+            canonical_sha = manifest["files"][src]["sha256"]
+            if not force and actual_sha != canonical_sha and actual_sha != prev_sha:
+                conflicts.append(
+                    f"  {dest}: local modifications present (pass --force to overwrite)"
+                )
+        validated_plan.append((src, dest, src_path, dest_path))
 
-if conflicts:
-    sys.stderr.write("sync-kit: refusing to overwrite locally modified file(s):\n" + "\n".join(conflicts) + "\n")
-    sys.exit(1)
+    if conflicts:
+        sys.stderr.write(f"sync-kit: refusing to overwrite locally modified file(s) in {target_dir.name}:\n" + "\n".join(conflicts) + "\n")
+        sys.exit(1)
 
-# Merge with previously tracked files so selective --files syncs never silently untrack other synced files.
-synced_record: dict[str, dict] = dict(prev_files)
-for src, dest, src_path, dest_path in validated_plan:
-    # Ensure no directory component became a symlink before mkdir.
-    validate_dest_rel(target_dir, dest)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    validate_dest_rel(target_dir, dest)
-    raw_bytes = src_path.read_bytes()
-    src_mode = src_path.stat().st_mode
-    atomic_write_bytes(dest_path, raw_bytes, file_mode=src_mode)
-    # Remove any old destination entry if this source was remapped to a new destination.
-    for old_dest, old_info in list(synced_record.items()):
-        if old_dest != dest and old_info.get("source") == src:
-            del synced_record[old_dest]
-    synced_record[dest] = {
-        "source": src,
-        "sha256": manifest["files"][src]["sha256"],
+    # Merge with previously tracked files so selective --files syncs never silently untrack other synced files.
+    synced_record: dict[str, dict] = dict(prev_files)
+    for src, dest, src_path, dest_path in validated_plan:
+        # Ensure no directory component became a symlink before mkdir.
+        validate_dest_rel(target_dir, dest)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        validate_dest_rel(target_dir, dest)
+        raw_bytes = src_path.read_bytes()
+        src_mode = src_path.stat().st_mode
+        atomic_write_bytes(dest_path, raw_bytes, file_mode=src_mode)
+        # Remove any old destination entry if this source was remapped to a new destination.
+        for old_dest, old_info in list(synced_record.items()):
+            if old_dest != dest and old_info.get("source") == src:
+                del synced_record[old_dest]
+        synced_record[dest] = {
+            "source": src,
+            "sha256": manifest["files"][src]["sha256"],
+        }
+
+    sync_payload = {
+        "schemaVersion": 1,
+        "kit": "agy-mcp-kit",
+        "kitVersion": manifest["version"],
+        "kitCommit": read_kit_commit(),
+        "files": dict(sorted(synced_record.items())),
     }
+    validate_sync_file(sync_file)
+    atomic_write_bytes(sync_file, (json.dumps(sync_payload, indent=2) + "\n").encode("utf-8"))
+    print(f"sync-kit: synced {len(validated_plan)} file(s) into {target_dir} ({len(synced_record)} tracked in {SYNC_META_NAME})")
 
-sync_payload = {
-    "schemaVersion": 1,
-    "kit": "agy-mcp-kit",
-    "kitVersion": manifest["version"],
-    "kitCommit": read_kit_commit(),
-    "files": dict(sorted(synced_record.items())),
-}
-validate_sync_file(sync_file)
-atomic_write_bytes(sync_file, (json.dumps(sync_payload, indent=2) + "\n").encode("utf-8"))
-print(f"sync-kit: synced {len(validated_plan)} file(s) into {target_dir} ({len(synced_record)} tracked in {SYNC_META_NAME})")
+for target_item in target_list:
+    process_target(target_item)
 PY

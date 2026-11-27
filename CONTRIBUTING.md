@@ -15,7 +15,9 @@ Contributions to [Panel Kit](https://github.com/eatingDream-antigravity-plugins/
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
-node --test panel/test/kit.test.mjs
+npm ci --ignore-scripts
+npm run typecheck
+npm test
 bash scripts/sync-kit.sh --check-manifest
 bash scripts/check_sanitized.sh
 ```

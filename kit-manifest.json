@@ -25,18 +25,18 @@
     },
     "panel/tokens.css": {
       "defaultDest": "panel/kit/tokens.css",
-      "sha256": "2f43b5c63caaa5cac967074850dede182beb8962418a28f65f7b83dce4afb525",
-      "bytes": 1891
+      "sha256": "e9b1091872c8a1b1f072470edfac643617d719850ea2d89dfbfdbd612d620823",
+      "bytes": 2484
     },
-    "panel/bridge.js": {
-      "defaultDest": "panel/kit/bridge.js",
-      "sha256": "96908d427a2fe01cb401bbd2795b4c3b485e91e87f3eaf8f9e6ef12fe196552c",
-      "bytes": 20788
+    "panel/bridge.ts": {
+      "defaultDest": "panel/kit/bridge.ts",
+      "sha256": "55c2f844c95b5caa0f800899e74265f58655b35e45e4ad5894f5f8168f4021ab",
+      "bytes": 28966
     },
-    "panel/guard.mjs": {
-      "defaultDest": "panel/kit/guard.mjs",
-      "sha256": "ba7c6afd484a519123849a1b2fbf5675497ea0d12d83225071a47503eb01ab9d",
-      "bytes": 16948
+    "panel/guard.ts": {
+      "defaultDest": "panel/kit/guard.ts",
+      "sha256": "43f4ee5c1595a0486d1bbfe2b85df4ebc06e64e4bb96bd46f879b2fad29904ed",
+      "bytes": 19397
     },
     "scripts/check_sanitized.sh": {
       "defaultDest": "scripts/check_sanitized.sh",
