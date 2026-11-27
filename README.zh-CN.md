@@ -4,9 +4,10 @@
 
 **面向 Antigravity 插件套件的标准 Rust MCP 运行时原语、SEP-1865 暖色编辑风面板套件与零漂移同步工具。**
 
-[主页](https://eatingdream.dev) · [English](README.md) | 简体中文 · [AI 指南](docs/ai-guide.md) · [`llms.txt`](llms.txt)
+[主页](https://eatingdream.dev) · [English](README.md) | 简体中文 · [Releases](https://github.com/eatingDream-antigravity-plugins/PanelKit/releases) · [AI 指南](docs/ai-guide.md) · [`llms.txt`](llms.txt)
 
 [![CI](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/eatingDream-antigravity-plugins/PanelKit?style=flat-square)](https://github.com/eatingDream-antigravity-plugins/PanelKit/releases)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-1A1916?logo=rust&logoColor=white)
 ![SEP-1865](https://img.shields.io/badge/MCP%20Apps-SEP--1865-D97757)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)

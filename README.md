@@ -4,9 +4,10 @@
 
 **Canonical Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift vendor sync for Antigravity plugins.**
 
-[Homepage](https://eatingdream.dev) · English | [简体中文](README.zh-CN.md) · [AI Guide](docs/ai-guide.md) · [`llms.txt`](llms.txt)
+[Homepage](https://eatingdream.dev) · English | [简体中文](README.zh-CN.md) · [Releases](https://github.com/eatingDream-antigravity-plugins/PanelKit/releases) · [AI Guide](docs/ai-guide.md) · [`llms.txt`](llms.txt)
 
 [![CI](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml/badge.svg)](https://github.com/eatingDream-antigravity-plugins/PanelKit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/eatingDream-antigravity-plugins/PanelKit?style=flat-square)](https://github.com/eatingDream-antigravity-plugins/PanelKit/releases)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-1A1916?logo=rust&logoColor=white)
 ![SEP-1865](https://img.shields.io/badge/MCP%20Apps-SEP--1865-D97757)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
