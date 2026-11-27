@@ -1,10 +1,10 @@
-# PanelKit (agy-mcp-kit)
+# Panel Kit (`agy-mcp-kit`)
 
-> Canonical zero-bloat Rust MCP runtime primitives, SEP-1865 Editorial-Warm panel kit, and zero-drift sync tooling for the eatingDream Antigravity Plugin Suite (ContextRadar, ClamGuard, RemoteCast, ColabDeck). Homepage: https://eatingdream.dev
+> Shared Rust MCP runtime primitives, dark-first panel kit, browserless i18n/UI structural guards, and SHA-256 vendor sync for the eatingDream Antigravity Plugin Suite (Context Radar, Clam Guard, Remote Cast, Colab Deck). Homepage: https://eatingdream.dev · Repo: https://github.com/eatingDream-antigravity-plugins/panel-kit
 
 ## Key Files
-- [README.md](README.md): Project overview and quick start
-- [docs/ai-guide.md](docs/ai-guide.md): Complete Rust API, Panel Bridge, QA Gate, and `sync-kit.sh` reference for Agents
+- [README.md](README.md): Outcome-first project overview and quick start
+- [docs/ai-guide.md](docs/ai-guide.md): Complete Rust API, Panel Bridge, QA Gate, i18n guards, and `sync-kit.sh` reference for Agents
 - [kit-manifest.json](kit-manifest.json): Canonical SHA256 manifest of all syncable kit files
 
 ## Rust Modules (`serde` + `serde_json` only)
@@ -13,10 +13,10 @@
 - [src/html_boot.rs](src/html_boot.rs): Split-point `HtmlLoader` with `(mtime, len)` cache and safe inline-script JSON escaping
 - [src/test_guard.rs](src/test_guard.rs): Compile-time `#[cfg(test)]` refusal helper (`ensure_not_in_test`, `guard_host_effect!`)
 
-## Panel Kit (Editorial-Warm / SEP-1865)
+## Panel Kit (`panel/`)
 - [panel/tokens.css](panel/tokens.css): 16 canonical two-letter tokens (dark `#141311`, light `#FAF8F4` + `--ok: #2F7D53`), reduced-motion
 - [panel/bridge.js](panel/bridge.js): Strict `ev.source === parent` PostMessage bridge (`2026-01-26`), `serverTools`, live theme sync, net RTT
-- [panel/guard.mjs](panel/guard.mjs): Shared Panel QA gate (`assertPanelInvariants`, CLI + ESM)
+- [panel/guard.mjs](panel/guard.mjs): Shared Panel QA & i18n gate (`assertPanelInvariants`, `checkI18nParity`, `checkEnNoCjk`, CLI + ESM)
 
 ## Sync & Hygiene Scripts
 - [scripts/sync-kit.sh](scripts/sync-kit.sh): Vendor canonical files into target repos (`--files`, `--map`, `--check`, `--update-manifest`, `--check-manifest`)

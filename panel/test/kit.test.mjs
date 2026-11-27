@@ -17,7 +17,11 @@ import {
 import {
   DEFAULT_MAX_BYTES,
   FAMILY_TOKENS,
+  assertEnNoCjk,
+  assertI18nParity,
   assertPanelInvariants,
+  checkEnNoCjk,
+  checkI18nParity,
   checkPanelInvariants,
 } from "../guard.mjs";
 
@@ -566,6 +570,84 @@ describe("agy-mcp-kit Panel QA Gate (guard.mjs) & tokens.css", () => {
       exitCode = err.status;
     }
     assert.equal(exitCode, 2, "guard.mjs CLI must exit 2 on unknown --* flags");
+  });
+
+  it("enforces 1:1 i18n key + placeholder parity and zero stray CJK in EN UI copy with remediation errors", () => {
+    const validEn = {
+      title: "Panel Kit",
+      stats: { summary: "{count} active of {total}", empty: "Nothing running" },
+    };
+    const validZh = {
+      title: "面板套件",
+      stats: { summary: "共 {total} 项，活跃 {count} 项", empty: "暂无运行项" },
+    };
+
+    const okParity = assertI18nParity(validEn, validZh);
+    assert.equal(okParity.ok, true);
+    assert.equal(okParity.checkedKeys, 3);
+    assert.equal(assertEnNoCjk(validEn).ok, true);
+
+    // Missing zh key
+    const missingZh = checkI18nParity(validEn, { title: "面板套件", stats: { summary: "{count}/{total}" } });
+    assert.equal(missingZh.ok, false);
+    assert.match(missingZh.errors[0], /Missing zh translation for key "stats\.empty".*add "stats\.empty"/);
+
+    // Extra zh key
+    const extraZh = checkI18nParity(validEn, {
+      ...validZh,
+      extraHint: "多余文案",
+    });
+    assert.equal(extraZh.ok, false);
+    assert.match(extraZh.errors[0], /Extra zh translation key "extraHint".*remove the stale zh key/);
+
+    // Placeholder mismatch (including repeated count mismatch)
+    const badPlaceholder = checkI18nParity(validEn, {
+      title: "面板套件",
+      stats: { summary: "{count} 项，共 {count} 项", empty: "暂无运行项" },
+    });
+    assert.equal(badPlaceholder.ok, false);
+    assert.match(badPlaceholder.errors[0], /Placeholder mismatch for i18n key "stats\.summary"/);
+    assert.match(badPlaceholder.errors[0], /keep identical \{placeholder\} tokens/);
+
+    // Asymmetric empty string
+    const emptyZh = checkI18nParity(validEn, {
+      title: "面板套件",
+      stats: { summary: "{count} / {total}", empty: "   " },
+    });
+    assert.equal(emptyZh.ok, false);
+    assert.match(emptyZh.errors[0], /Empty zh translation for key "stats\.empty"/);
+
+    // Non-object input fails closed
+    const invalidInput = checkI18nParity(null, validZh);
+    assert.equal(invalidInput.ok, false);
+    assert.match(invalidInput.errors[0], /Invalid en translation map/);
+
+    // Stray CJK characters and CJK punctuation in EN UI copy
+    const cjkLeak = checkEnNoCjk({
+      okBtn: "Save",
+      badTitle: "Context Radar 状态",
+      badPunct: "Refresh：auto",
+      langToggle: "中文",
+    });
+    assert.equal(cjkLeak.ok, false);
+    assert.equal(cjkLeak.errors.length, 3);
+    assert.match(cjkLeak.errors[0], /Stray CJK character\(s\) \[状态\] in EN copy for key "badTitle"/);
+    assert.match(cjkLeak.errors[1], /Stray CJK character\(s\) \[：\] in EN copy for key "badPunct"/);
+
+    // allowKeys permits an explicit language switcher label while still catching leaks elsewhere
+    const allowedReport = checkEnNoCjk(
+      { okBtn: "Save", langToggle: "中文" },
+      { allowKeys: ["langToggle"] }
+    );
+    assert.equal(allowedReport.ok, true);
+    assert.throws(
+      () => assertI18nParity({ a: "Hi" }, {}),
+      /i18n parity gate failed/
+    );
+    assert.throws(
+      () => assertEnNoCjk({ a: "Hello 世界" }),
+      /EN no-CJK gate failed/
+    );
   });
 });
 

@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions to [PanelKit (agy-mcp-kit)](https://github.com/eatingDream-antigravity-plugins/PanelKit) are welcome.
+Contributions to [Panel Kit](https://github.com/eatingDream-antigravity-plugins/panel-kit) (`agy-mcp-kit`) are welcome.
 
 ## Workflow
 

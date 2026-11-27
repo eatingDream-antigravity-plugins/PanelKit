@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 272" width="760" height="272" role="img" aria-labelledby="title desc">
+  <title id="title">Panel Kit Architecture (Dark)</title>
+  <desc id="desc">Shared Rust MCP runtime and panel UI modules synced via SHA-256 manifest into Context Radar, Clam Guard, Remote Cast, and Colab Deck.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#D97757" />
+    </marker>
+  </defs>
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  </style>
+
+  <!-- Canvas -->
+  <rect x="1" y="1" width="758" height="270" rx="14" fill="#141311" stroke="#2D2A26" stroke-width="1.5" />
+
+  <!-- Header -->
+  <text x="28" y="33" class="font" font-size="13" font-weight="600" fill="#F2EFE9">Panel Kit (agy-mcp-kit)</text>
+  <text x="732" y="33" text-anchor="end" class="font" font-size="11.5" fill="#9B948A">Shared once, synced standalone without drift</text>
+
+  <!-- Column 1: Canonical Source -->
+  <rect x="28" y="50" width="232" height="192" rx="10" fill="#1B1916" stroke="#332F2A" stroke-width="1.2" />
+  <text x="44" y="73" class="font" font-size="12" font-weight="600" fill="#D97757">1. Canonical Source</text>
+  <text x="244" y="73" text-anchor="end" class="mono" font-size="10.5" fill="#9B948A">panel-kit</text>
+
+  <rect x="42" y="88" width="204" height="66" rx="8" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="54" y="108" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Rust MCP Runtime</text>
+  <text x="54" y="126" class="mono" font-size="10.5" fill="#C4BDB3">mcp_protocol · swr_cache</text>
+  <text x="54" y="142" class="mono" font-size="10.5" fill="#C4BDB3">html_boot · test_guard</text>
+
+  <rect x="42" y="164" width="204" height="66" rx="8" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="54" y="184" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Panel UI &amp; QA Guards</text>
+  <text x="54" y="202" class="mono" font-size="10.5" fill="#C4BDB3">tokens.css · bridge.js</text>
+  <text x="54" y="218" class="mono" font-size="10.5" fill="#C4BDB3">guard.mjs (CSP, size, i18n)</text>
+
+  <!-- Connector 1 -> 2 -->
+  <line x1="262" y1="146" x2="288" y2="146" stroke="#D97757" stroke-width="1.8" marker-end="url(#arrow)" />
+
+  <!-- Column 2: Zero-Drift Sync -->
+  <rect x="292" y="88" width="176" height="116" rx="10" fill="#1F1C18" stroke="#D97757" stroke-opacity="0.65" stroke-width="1.3" />
+  <text x="380" y="113" text-anchor="middle" class="font" font-size="12" font-weight="600" fill="#F2EFE9">2. Drift-Free Sync</text>
+  <rect x="308" y="125" width="144" height="24" rx="6" fill="#29241E" stroke="#473B31" stroke-width="1" />
+  <text x="380" y="141" text-anchor="middle" class="mono" font-size="10.5" fill="#E89A7E">scripts/sync-kit.sh</text>
+  <text x="380" y="169" text-anchor="middle" class="font" font-size="11" fill="#C4BDB3">SHA-256 kit-manifest.json</text>
+  <text x="380" y="188" text-anchor="middle" class="font" font-size="11" fill="#4E9F72">--check gate in CI</text>
+
+  <!-- Connector 2 -> 3 -->
+  <line x1="470" y1="146" x2="496" y2="146" stroke="#D97757" stroke-width="1.8" marker-end="url(#arrow)" />
+
+  <!-- Column 3: Standalone Plugins -->
+  <rect x="500" y="50" width="232" height="192" rx="10" fill="#1B1916" stroke="#332F2A" stroke-width="1.2" />
+  <text x="516" y="73" class="font" font-size="12" font-weight="600" fill="#4E9F72">3. Standalone Plugins</text>
+  <text x="716" y="73" text-anchor="end" class="font" font-size="10.5" fill="#9B948A">Zero git deps</text>
+
+  <rect x="514" y="88" width="204" height="32" rx="7" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="526" y="108" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Context Radar</text>
+  <text x="706" y="108" text-anchor="end" class="mono" font-size="10" fill="#9B948A">context-radar</text>
+
+  <rect x="514" y="126" width="204" height="32" rx="7" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="526" y="146" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Clam Guard</text>
+  <text x="706" y="146" text-anchor="end" class="mono" font-size="10" fill="#9B948A">clam-guard</text>
+
+  <rect x="514" y="164" width="204" height="32" rx="7" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="526" y="184" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Remote Cast</text>
+  <text x="706" y="184" text-anchor="end" class="mono" font-size="10" fill="#9B948A">remote-cast</text>
+
+  <rect x="514" y="202" width="204" height="32" rx="7" fill="#23201C" stroke="#3B3630" stroke-width="1" />
+  <text x="526" y="222" class="font" font-size="11.5" font-weight="600" fill="#F2EFE9">Colab Deck</text>
+  <text x="706" y="222" text-anchor="end" class="mono" font-size="10" fill="#9B948A">colab-deck</text>
+
+  <!-- Footer -->
+  <text x="380" y="259" text-anchor="middle" class="font" font-size="11" fill="#9B948A">Offline cargo build --locked · Zero runtime network calls · &lt;43.5 KB single-file panels</text>
+</svg>

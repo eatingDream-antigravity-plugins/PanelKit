@@ -35,8 +35,8 @@
     },
     "panel/guard.mjs": {
       "defaultDest": "panel/kit/guard.mjs",
-      "sha256": "766b586b6f14cacfe45e187101f0a2df3c70d83f9a49cc73a4f5e458bbde2562",
-      "bytes": 11097
+      "sha256": "ba7c6afd484a519123849a1b2fbf5675497ea0d12d83225071a47503eb01ab9d",
+      "bytes": 16948
     },
     "scripts/check_sanitized.sh": {
       "defaultDest": "scripts/check_sanitized.sh",
