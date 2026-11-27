@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/eatingDream-antigravity-plugins/panel-kit/compare/v0.3.0...v0.4.0) (2026-11-27)
+
+
+### Features
+
+* unify Lucid Indigo 64 KiB panel kit in strict TypeScript ([#10](https://github.com/eatingDream-antigravity-plugins/panel-kit/issues/10)) ([4f3ec2f](https://github.com/eatingDream-antigravity-plugins/panel-kit/commit/4f3ec2fb1b1072f583d08b5c972faa79d1527b6e))
+
 ## [0.3.0](https://github.com/eatingDream-antigravity-plugins/panel-kit/compare/v0.2.2...v0.3.0) (2026-11-27)
 
 
